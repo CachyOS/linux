@@ -208,13 +208,7 @@ if [[ "$push_confirm" == [yY] ]]; then
         --notes-file "$NOTES_FILE" \
         --verify-tag
 
-    if [[ $NAIM == 1 ]]; then
-        rm -f "$NOTES_FILE"
-        mv "$TARBALL" ../pkgbuilds/linux-cachyos-rc/
-    else
-        rm -f "$TARBALL" "$NOTES_FILE"
-    fi
-
+    rm -f "$TARBALL" "$NOTES_FILE"
     echo ""
     echo "Release created with uploaded tarball (served via GitHub's CDN)."
     echo "Download URL: https://github.com/CachyOS/linux/releases/download/${TAG}/${TARBALL}"
