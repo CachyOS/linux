@@ -944,6 +944,7 @@ endif
 # This pass looks at innermost loops and reorders their instructions by
 # overlapping different iterations.
 KBUILD_CFLAGS += $(call cc-option,-fmodulo-sched -fmodulo-sched-allow-regmoves -fivopts)
+KBUILD_CFLAGS += $(call cc-option,-mllvm -enable-pipeliner)
 
 # Always set `debug-assertions` and `overflow-checks` because their default
 # depends on `opt-level` and `debug-assertions`, respectively.
