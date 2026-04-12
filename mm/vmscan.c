@@ -4787,7 +4787,7 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc,
 	 * to keep reclaim moving forwards.
 	 */
 	nr_to_scan >>= sc->priority;
-	if (!nr_to_scan)
+	if (!nr_to_scan && sc->priority < DEF_PRIORITY)
 		nr_to_scan = min(evictable, SWAP_CLUSTER_MAX);
 
 	return nr_to_scan;
