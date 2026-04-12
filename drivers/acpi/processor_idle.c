@@ -1418,6 +1418,7 @@ void acpi_processor_power_init(struct acpi_processor *pr)
 	if (disabled_by_idle_boot_param())
 		return;
 
+#ifdef CONFIG_X86
 	/*
 	 * The bus master check on AMD is observed to be very costly and results
 	 * in not only increased power consumption, but also lots of CPU cycles
@@ -1428,6 +1429,7 @@ void acpi_processor_power_init(struct acpi_processor *pr)
 		bm_check_disable = true;
 		pr_info("Enabled processor.bm_check_disable for AMD cpuidle\n");
 	}
+#endif
 
 	if (!acpi_processor_get_power_info(pr))
 		pr->flags.power_setup_done = 1;
