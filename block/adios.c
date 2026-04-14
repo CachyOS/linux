@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/rbtree.h>
 #include <linux/sbitmap.h>
+#include <linux/mempool.h>
 #include <linux/slab.h>
 #include <linux/timekeeping.h>
 #include <linux/percpu.h>
@@ -25,7 +26,7 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 
-#define ADIOS_VERSION "3.1.9"
+#define ADIOS_VERSION "3.2.0"
 
 /* Request Types:
  *
@@ -85,7 +86,7 @@ static u64 default_global_latency_window_rotational = 22000000ULL;
 // Ratio below which batch queues should be refilled
 static u8  default_bq_refill_below_ratio = 20;
 // Maximum latency sample to input
-static u64 default_lat_model_latency_limit = 500000000ULL;
+static u64 default_lat_model_latency_limit = 500 * NSEC_PER_MSEC;
 // Batch ordering strategy
 static u64 default_batch_order = 0;
 
@@ -205,10 +206,17 @@ struct latency_model {
 
 	// Per-CPU buckets to avoid lock contention on the completion path
 	struct lm_buckets __percpu *pcpu_buckets;
+	// Per-CPU snapshots for delta-based aggregation (accessed under update_lock)
+	struct lm_buckets __percpu *pcpu_snapshot;
 
 	u32 lm_shrink_at_kreqs;
 	u32 lm_shrink_at_gbytes;
 	u8  lm_shrink_resist;
+};
+
+struct adios_pcpu_completion {
+	u64      last_completed_time;
+	sector_t last_completed_pos;
 };
 
 union adios_in_flight_rqs {
@@ -248,7 +256,6 @@ struct adios_data {
 	u8  batch_order;
 	u8  elv_direction;
 	sector_t head_pos;
-	sector_t last_completed_pos;
 
 	bool bq_page;
 	struct list_head batch_queue[ADIOS_BQ_PAGES][ADIOS_OPTYPES];
@@ -265,9 +272,11 @@ struct adios_data {
 
 	union adios_in_flight_rqs in_flight_rqs;
 	atomic64_t total_pred_lat;
-	u64 last_completed_time;
 
-	struct kmem_cache *rq_data_pool;
+	struct adios_pcpu_completion __percpu *pcpu_completion;
+
+	struct kmem_cache *rq_data_cache;
+	mempool_t *rq_data_pool;
 	struct kmem_cache *dl_group_pool;
 
 	struct request_queue *queue;
@@ -464,8 +473,10 @@ static void reset_buckets(struct lm_buckets *buckets)
 
 static void lm_reset_pcpu_buckets(struct latency_model *model) {
 	int cpu;
-	for_each_possible_cpu(cpu)
+	for_each_possible_cpu(cpu) {
 		reset_buckets(per_cpu_ptr(model->pcpu_buckets, cpu));
+		reset_buckets(per_cpu_ptr(model->pcpu_snapshot, cpu));
+	}
 }
 
 // Update the latency model parameters and statistics
@@ -478,7 +489,7 @@ static void latency_model_update(
 	struct lm_buckets *aggr = ad->aggr_buckets;
 	struct latency_bucket_small *asb;
 	struct latency_bucket_large *alb;
-	struct lm_buckets *pcpu_b;
+	struct lm_buckets *pcpu_b, *snap;
 	unsigned long flags;
 	int cpu;
 	struct latency_model_params *old_params, *new_params;
@@ -493,30 +504,41 @@ static void latency_model_update(
 		return;
 	}
 
-	// Aggregate data from all CPUs and reset per-cpu buckets.
+	// Aggregate deltas from all CPUs using snapshot-delta method.
+	// Per-CPU counters increase monotonically; we compute delta = current - snapshot.
 	for_each_possible_cpu(cpu) {
 		pcpu_b = per_cpu_ptr(model->pcpu_buckets, cpu);
+		snap   = per_cpu_ptr(model->pcpu_snapshot, cpu);
 
 		for (u8 i = 0; i < LM_LAT_BUCKET_COUNT; i++) {
-			if (pcpu_b->small_bucket[i].sum_of_weights) {
+			u64 sw  = pcpu_b->small_bucket[i].sum_of_weights;
+			u64 sl  = pcpu_b->small_bucket[i].weighted_sum_latency;
+			u64 dsw = sw - snap->small_bucket[i].sum_of_weights;
+			u64 dsl = sl - snap->small_bucket[i].weighted_sum_latency;
+			snap->small_bucket[i].sum_of_weights = sw;
+			snap->small_bucket[i].weighted_sum_latency = sl;
+			if (dsw) {
 				asb = &aggr->small_bucket[i];
-				asb->sum_of_weights +=
-					pcpu_b->small_bucket[i].sum_of_weights;
-				asb->weighted_sum_latency +=
-					pcpu_b->small_bucket[i].weighted_sum_latency;
+				asb->sum_of_weights += dsw;
+				asb->weighted_sum_latency += dsl;
 			}
-			if (pcpu_b->large_bucket[i].sum_of_weights) {
+
+			u64 lw  = pcpu_b->large_bucket[i].sum_of_weights;
+			u64 ll  = pcpu_b->large_bucket[i].weighted_sum_latency;
+			u64 lb  = pcpu_b->large_bucket[i].weighted_sum_block_size;
+			u64 dlw = lw - snap->large_bucket[i].sum_of_weights;
+			u64 dll = ll - snap->large_bucket[i].weighted_sum_latency;
+			u64 dlb = lb - snap->large_bucket[i].weighted_sum_block_size;
+			snap->large_bucket[i].sum_of_weights = lw;
+			snap->large_bucket[i].weighted_sum_latency = ll;
+			snap->large_bucket[i].weighted_sum_block_size = lb;
+			if (dlw) {
 				alb = &aggr->large_bucket[i];
-				alb->sum_of_weights +=
-					pcpu_b->large_bucket[i].sum_of_weights;
-				alb->weighted_sum_latency +=
-					pcpu_b->large_bucket[i].weighted_sum_latency;
-				alb->weighted_sum_block_size +=
-					pcpu_b->large_bucket[i].weighted_sum_block_size;
+				alb->sum_of_weights += dlw;
+				alb->weighted_sum_latency += dll;
+				alb->weighted_sum_block_size += dlb;
 			}
 		}
-		// Reset per-cpu buckets after aggregating
-		reset_buckets(pcpu_b);
 	}
 
 	// Count the number of entries in aggregated buckets
@@ -566,7 +588,7 @@ static void latency_model_update(
 
 // Determine the bucket index for a given measured and predicted latency
 static u8 lm_input_bucket_index(u64 measured, u64 predicted) {
-	u8 bucket_index;
+	u32 bucket_index;
 
 	if (measured < predicted * 2)
 		bucket_index = div_u64((measured * 20), predicted);
@@ -575,7 +597,10 @@ static u8 lm_input_bucket_index(u64 measured, u64 predicted) {
 	else
 		bucket_index = div_u64((measured * 3), predicted) + 40;
 
-	return bucket_index;
+	if (bucket_index >= LM_LAT_BUCKET_COUNT)
+		bucket_index = LM_LAT_BUCKET_COUNT - 1;
+
+	return (u8)bucket_index;
 }
 
 // Input latency data into the latency model
@@ -600,9 +625,6 @@ static void latency_model_input(struct adios_data *ad,
 		// Handle small requests
 		bucket_index = lm_input_bucket_index(latency, current_base ?: 1);
 
-		if (bucket_index >= LM_LAT_BUCKET_COUNT)
-			bucket_index = LM_LAT_BUCKET_COUNT - 1;
-
 		buckets->small_bucket[bucket_index].sum_of_weights += weight;
 		buckets->small_bucket[bucket_index].weighted_sum_latency +=
 			latency * weight;
@@ -621,9 +643,6 @@ static void latency_model_input(struct adios_data *ad,
 		}
 
 		bucket_index = lm_input_bucket_index(latency, pred_lat);
-
-		if (bucket_index >= LM_LAT_BUCKET_COUNT)
-			bucket_index = LM_LAT_BUCKET_COUNT - 1;
 
 		buckets->large_bucket[bucket_index].sum_of_weights += weight;
 		buckets->large_bucket[bucket_index].weighted_sum_latency +=
@@ -910,6 +929,8 @@ static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
 	rd->block_size = blk_rq_bytes(rq);
 	rd->pred_lat =
 		latency_model_predict(&ad->latency_model[optype], rd->block_size);
+	if (unlikely(rd->pred_lat > ad->lat_model_latency_limit))
+		rd->pred_lat = ad->lat_model_latency_limit;
 
 	/* Tier-0: BLK_MQ_INSERT_AT_HEAD Requests */
 	if (insert_flags & BLK_MQ_INSERT_AT_HEAD) {
@@ -924,7 +945,7 @@ static void insert_request_post_stability(struct blk_mq_hw_ctx *hctx,
 	 * separate barrier_queue. This ensures that no new requests are processed
 	 * until all work preceding the barrier is complete.
 	 */
-	rq_is_flush = rq->cmd_flags & REQ_OP_FLUSH;
+	rq_is_flush = (rq->cmd_flags & REQ_OP_MASK) == REQ_OP_FLUSH;
 	if (eval_adios_state(ad, ADIOS_STATE_BP) || rq_is_flush) {
 		scoped_guard(spinlock_irqsave, &ad->barrier_lock) {
 			if (rq_is_flush)
@@ -951,6 +972,8 @@ static void insert_request_pre_stability(struct blk_mq_hw_ctx *hctx,
 	rd->block_size = blk_rq_bytes(rq);
 	rd->pred_lat =
 		latency_model_predict(&ad->latency_model[optype], rd->block_size);
+	if (unlikely(rd->pred_lat > ad->lat_model_latency_limit))
+		rd->pred_lat = ad->lat_model_latency_limit;
 
 	insert_to_prio_queue(ad, rq, pq_idx);
 
@@ -995,16 +1018,10 @@ static void adios_insert_requests(struct blk_mq_hw_ctx *hctx,
 // Prepare a request before it is inserted into the scheduler
 static void adios_prepare_request(struct request *rq) {
 	struct adios_data *ad = rq->q->elevator->elevator_data;
-	struct adios_rq_data *rd = get_rq_data(rq);
+	struct adios_rq_data *rd;
 
-	rq->elv.priv[0] = NULL;
-
-	/* Allocate adios_rq_data from the memory pool */
-	rd = kmem_cache_zalloc(ad->rq_data_pool, GFP_ATOMIC);
-	if (WARN(!rd, "adios_prepare_request: "
-			"Failed to allocate memory from rq_data_pool. rd is NULL\n"))
-		return;
-
+	rd = mempool_alloc(ad->rq_data_pool, GFP_ATOMIC);
+	memset(rd, 0, sizeof(*rd));
 	rd->rq = rq;
 	rq->elv.priv[0] = rd;
 }
@@ -1304,7 +1321,7 @@ static bool release_barrier_requests(struct adios_data *ad) {
 					continue;
 				}
 
-				if (trq->cmd_flags & REQ_OP_FLUSH)
+				if ((trq->cmd_flags & REQ_OP_MASK) == REQ_OP_FLUSH)
 					break;
 
 				list_move_tail(&trq->queuelist, &local_list);
@@ -1397,36 +1414,49 @@ static void adios_completed_request(struct request *rq, u64 now) {
 	}
 	u8 optype = adios_optype(rq);
 
+	unsigned long flags;
+	struct adios_pcpu_completion *pc;
+
+	local_irq_save(flags);
+	pc = this_cpu_ptr(ad->pcpu_completion);
+
 	if (optype == ADIOS_OTHER) {
 		// Non-positional commands make the head position unpredictable.
 		// Invalidate our knowledge of the last completed position.
 		if (ad->is_rotational)
-			ad->last_completed_pos = 0;
+			pc->last_completed_pos = 0;
+		local_irq_restore(flags);
 		return;
 	}
 
-	u64 lct = ad->last_completed_time ?: rq->io_start_time_ns;
-	ad->last_completed_time = (ifr.count) ? now : 0;
+	u64 lct = pc->last_completed_time ?: rq->io_start_time_ns;
+	pc->last_completed_time = (ifr.count) ? now : 0;
 
-	if (!rq->io_start_time_ns || !rd->block_size || unlikely(now < lct))
+	if (!rq->io_start_time_ns || !rd->block_size || unlikely(now < lct)) {
+		local_irq_restore(flags);
 		return;
+	}
 
 	u64 latency = now - lct;
-	if (latency > ad->lat_model_latency_limit)
-		return;
 
 	u32 weight = 1;
 	if (ad->is_rotational) {
 		sector_t current_pos = blk_rq_pos(rq);
 		// Only calculate seek distance if we have a valid last position.
-		if (ad->last_completed_pos > 0) {
+		if (pc->last_completed_pos > 0) {
 			u64 seek_distance = abs(
-				(s64)current_pos - (s64)ad->last_completed_pos);
-			weight = 65 - __builtin_clzll(seek_distance);
+				(s64)current_pos - (s64)pc->last_completed_pos);
+			if (seek_distance)
+				weight = 65 - __builtin_clzll(seek_distance);
 		}
 		// Update (or re-synchronize) our knowledge of the head position.
-		ad->last_completed_pos = current_pos + blk_rq_sectors(rq);
+		pc->last_completed_pos = current_pos + blk_rq_sectors(rq);
 	}
+
+	local_irq_restore(flags);
+
+	if (latency > ad->lat_model_latency_limit)
+		return;
 
 	latency_model_input(ad, &ad->latency_model[optype],
 		rd->block_size, latency, rd->pred_lat, weight);
@@ -1439,7 +1469,7 @@ static void adios_finish_request(struct request *rq) {
 
 	if (rq->elv.priv[0]) {
 		// Free adios_rq_data back to the memory pool
-		kmem_cache_free(ad->rq_data_pool, get_rq_data(rq));
+		mempool_free(get_rq_data(rq), ad->rq_data_pool);
 		rq->elv.priv[0] = NULL;
 	}
 }
@@ -1466,12 +1496,19 @@ static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) 
 	eq->elevator_data = ad;
 
 	// Create a memory pool for adios_rq_data
-	ad->rq_data_pool = kmem_cache_create("rq_data_pool",
+	ad->rq_data_cache = kmem_cache_create("adios_rq_data",
 						sizeof(struct adios_rq_data),
 						0, SLAB_HWCACHE_ALIGN, NULL);
+	if (!ad->rq_data_cache) {
+		pr_err("adios: Failed to create rq_data_cache\n");
+		goto free_ad;
+	}
+
+	ad->rq_data_pool = mempool_create_slab_pool(
+						q->nr_requests, ad->rq_data_cache);
 	if (!ad->rq_data_pool) {
 		pr_err("adios: Failed to create rq_data_pool\n");
-		goto free_ad;
+		goto destroy_rq_data_cache;
 	}
 
 	/* Create a memory pool for dl_group */
@@ -1502,6 +1539,12 @@ static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) 
 		goto destroy_dl_group_pool;
 	}
 
+	ad->pcpu_completion = alloc_percpu(struct adios_pcpu_completion);
+	if (!ad->pcpu_completion) {
+		pr_err("adios: Failed to allocate per-CPU completion data\n");
+		goto free_aggr_buckets;
+	}
+
 	for (optype = 0; optype < ADIOS_OPTYPES; optype++) {
 		struct latency_model *model = &ad->latency_model[optype];
 		struct latency_model_params *params;
@@ -1518,6 +1561,14 @@ static int adios_init_sched(struct request_queue *q, struct elevator_queue *eq) 
 		model->pcpu_buckets = alloc_percpu(struct lm_buckets);
 		if (!model->pcpu_buckets) {
 			pr_err("adios: Failed to allocate per-CPU buckets\n");
+			kfree(params);
+			goto free_buckets;
+		}
+
+		model->pcpu_snapshot = alloc_percpu(struct lm_buckets);
+		if (!model->pcpu_snapshot) {
+			pr_err("adios: Failed to allocate per-CPU snapshot\n");
+			free_percpu(model->pcpu_buckets);
 			kfree(params);
 			goto free_buckets;
 		}
@@ -1570,13 +1621,18 @@ free_buckets:
 	while (optype-- > 0) {
 		struct latency_model *prev_model = &ad->latency_model[optype];
 		kfree(rcu_access_pointer(prev_model->params));
+		free_percpu(prev_model->pcpu_snapshot);
 		free_percpu(prev_model->pcpu_buckets);
 	}
+	free_percpu(ad->pcpu_completion);
+free_aggr_buckets:
 	kfree(ad->aggr_buckets);
 destroy_dl_group_pool:
 	kmem_cache_destroy(ad->dl_group_pool);
 destroy_rq_data_pool:
-	kmem_cache_destroy(ad->rq_data_pool);
+	mempool_destroy(ad->rq_data_pool);
+destroy_rq_data_cache:
+	kmem_cache_destroy(ad->rq_data_cache);
 free_ad:
 	kfree(ad);
 put_eq:
@@ -1601,15 +1657,17 @@ static void adios_exit_sched(struct elevator_queue *e) {
 		RCU_INIT_POINTER(model->params, NULL);
 		kfree_rcu(params, rcu);
 
+		free_percpu(model->pcpu_snapshot);
 		free_percpu(model->pcpu_buckets);
 	}
 
 	synchronize_rcu();
 
+	free_percpu(ad->pcpu_completion);
 	kfree(ad->aggr_buckets);
 
-	if (ad->rq_data_pool)
-		kmem_cache_destroy(ad->rq_data_pool);
+	mempool_destroy(ad->rq_data_pool);
+	kmem_cache_destroy(ad->rq_data_cache);
 
 	if (ad->dl_group_pool)
 		kmem_cache_destroy(ad->dl_group_pool);
