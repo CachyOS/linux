@@ -70,8 +70,8 @@ Each attribute has the following properties:
 The following firmware-attributes are implemented:
  - cpu_temp: CPU Thermal Load Limit
  - dgpu_boost_clk: Dedicated GPU Boost Clock
+ - dgpu_didvid: Dedicated GPU Device Identifier and Vendor Identifier
  - dgpu_enable: Dedicated GPU Enabled Status
- - gpu_didvid: GPU Device Identifier and Vendor Identifier
  - gpu_mode: GPU Mode by Power Limit
  - gpu_nv_ac_offset: Nvidia GPU AC Total Processing Power Baseline Offset
  - gpu_nv_bpl: Nvidia GPU Base Power Limit
