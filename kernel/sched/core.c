@@ -3627,9 +3627,6 @@ static inline void ttwu_do_wakeup(struct task_struct *p)
 
 void update_rq_avg_idle(struct rq *rq)
 {
-	if (!rq->idle_stamp)
-		return;
-
 	u64 delta = rq_clock(rq) - rq->idle_stamp;
 	u64 max = 2*rq->max_idle_balance_cost;
 
