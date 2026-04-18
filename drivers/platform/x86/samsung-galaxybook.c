@@ -197,6 +197,9 @@ static const guid_t performance_mode_guid =
 #define GB_ACPI_NOTIFY_DEVICE_ON_TABLE          0x6c
 #define GB_ACPI_NOTIFY_DEVICE_OFF_TABLE         0x6d
 #define GB_ACPI_NOTIFY_HOTKEY_PERFORMANCE_MODE  0x70
+#define GB_ACPI_NOTIFY_HOTKEY_KBD_BACKLIGHT     0x7d
+#define GB_ACPI_NOTIFY_HOTKEY_MICMUTE           0x6e
+#define GB_ACPI_NOTIFY_HOTKEY_CAMERA            0x6f
 
 #define GB_KEY_KBD_BACKLIGHT_KEYDOWN    0x2c
 #define GB_KEY_KBD_BACKLIGHT_KEYUP      0xac
@@ -876,6 +879,7 @@ static int galaxybook_input_init(struct samsung_galaxybook *galaxybook)
 	galaxybook->input->phys = DRIVER_NAME "/input0";
 	galaxybook->input->id.bustype = BUS_HOST;
 
+	input_set_capability(galaxybook->input, EV_KEY, KEY_MICMUTE);
 	input_set_capability(galaxybook->input, EV_SW, SW_CAMERA_LENS_COVER);
 
 	return input_register_device(galaxybook->input);
@@ -1258,6 +1262,25 @@ static void galaxybook_acpi_notify(acpi_handle handle, u32 event, void *data)
 	case GB_ACPI_NOTIFY_HOTKEY_PERFORMANCE_MODE:
 		if (galaxybook->has_performance_mode)
 			platform_profile_cycle();
+		break;
+	case GB_ACPI_NOTIFY_HOTKEY_KBD_BACKLIGHT:
+		if (galaxybook->has_kbd_backlight)
+			schedule_work(&galaxybook->kbd_backlight_hotkey_work);
+		break;
+	case GB_ACPI_NOTIFY_HOTKEY_MICMUTE:
+		input_report_key(galaxybook->input, KEY_MICMUTE, 1);
+		input_sync(galaxybook->input);
+		input_report_key(galaxybook->input, KEY_MICMUTE, 0);
+		input_sync(galaxybook->input);
+		break;
+	case GB_ACPI_NOTIFY_HOTKEY_CAMERA:
+		if (galaxybook->has_block_recording) {
+			schedule_work(&galaxybook->block_recording_hotkey_work);
+		} else {
+			input_report_switch(galaxybook->input, SW_CAMERA_LENS_COVER,
+					    !test_bit(SW_CAMERA_LENS_COVER, galaxybook->input->sw));
+			input_sync(galaxybook->input);
+		}
 		break;
 	default:
 		dev_warn(&galaxybook->platform->dev,
