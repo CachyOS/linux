@@ -644,7 +644,8 @@ static int ntfs_file_mmap_prepare(struct vm_area_desc *desc)
 	if (NInoCompressed(NTFS_I(inode)))
 		return -EOPNOTSUPP;
 
-	if (vma_desc_test_flags(desc, VMA_WRITE_BIT)) {
+	if (vma_desc_test_flags(desc, VMA_SHARED_BIT) &&
+	    vma_desc_test_flags(desc, VMA_MAYWRITE_BIT)) {
 		struct inode *inode = file_inode(file);
 		loff_t from, to;
 		int err;
