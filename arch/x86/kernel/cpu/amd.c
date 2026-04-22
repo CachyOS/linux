@@ -1035,11 +1035,8 @@ static const struct x86_cpu_id zen5_rdseed_microcode[] = {
 
 static void init_amd_zen5(struct cpuinfo_x86 *c)
 {
-	if (!x86_match_min_microcode_rev(zen5_rdseed_microcode)) {
-		clear_cpu_cap(c, X86_FEATURE_RDSEED);
-		msr_clear_bit(MSR_AMD64_CPUID_FN_7, 18);
-		pr_emerg_once("RDSEED32 is broken. Disabling the corresponding CPUID bit.\n");
-	}
+	if (!x86_match_min_microcode_rev(zen5_rdseed_microcode))
+		pr_emerg_once("RDSEED32 is broken. Please update your firmware.\n");
 }
 
 static void init_amd(struct cpuinfo_x86 *c)
