@@ -7714,7 +7714,7 @@ static inline bool test_idle_cores(int cpu)
 
 static inline bool is_idle_core(int cpu)
 {
-	return available_idle_cpu(cpu);
+	return (available_idle_cpu(cpu) || sched_idle_cpu(cpu));
 }
 
 static inline int select_idle_core(struct task_struct *p, int core, struct cpumask *cpus, int *idle_cpu)
@@ -8060,13 +8060,10 @@ give_up:
 
 #ifdef CONFIG_SCHED_POC_SELECTOR
 	/* Last resort: avoid enqueuing behind RT/DL tasks on target */
-	if (static_branch_likely(&poc_selector_active)) {
-		if (!rt_task(cpu_rq(target)->curr))
-			return target;
-
-		if (prev != target && !rt_task(cpu_rq(prev)->curr))
-			return prev;
-	}
+	if (static_branch_likely(&poc_selector_active) &&
+			rt_task(cpu_rq(target)->curr) &&
+			prev != target && !rt_task(cpu_rq(prev)->curr))
+		return prev;
 #endif
 	return target;
 }

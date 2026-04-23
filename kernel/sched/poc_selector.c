@@ -37,7 +37,7 @@
 #define SCHED_POC_SELECTOR_AUTHOR   "Masahito Suzuki"
 #define SCHED_POC_SELECTOR_PROGNAME "Piece-Of-Cake (POC) CPU Selector"
 
-#define SCHED_POC_SELECTOR_VERSION  "2.5.3"
+#define SCHED_POC_SELECTOR_VERSION  "2.5.7"
 
 /**************************************************************
  * Static keys:
@@ -568,6 +568,11 @@ static __always_inline u64 poc_idle_core_mask(u64 cpu_mask,
  */
 void __set_cpu_idle_state_poc(int cpu, int state)
 {
+	struct rq *rq = cpu_rq(cpu);
+	if (!static_branch_unlikely(&sched_poc_lockless_bitmap) &&
+			!state && READ_ONCE(rq->poc_idle_committed))
+		return;
+
 	guard(rcu)();
 	struct sched_domain_shared *sd_share =
 		rcu_dereference(per_cpu(sd_llc_shared, cpu));
@@ -581,7 +586,7 @@ void __set_cpu_idle_state_poc(int cpu, int state)
 		WRITE_ONCE(sd_share->poc_idle_cpus[bit], state > 0 ? 1 : 0);
 	} else if (state > 0) {
 		/* Entering idle: clear any stale committed flag */
-		WRITE_ONCE(cpu_rq(cpu)->poc_idle_committed, 0);
+		WRITE_ONCE(rq->poc_idle_committed, 0);
 		atomic64_or(bit_mask, &sd_share->poc_idle_cpus_mask);
 	} else {
 		/*
@@ -590,10 +595,8 @@ void __set_cpu_idle_state_poc(int cpu, int state)
 		 * cacheline.  The flag lives in rq's first cacheline —
 		 * same line the waker already dirtied via ttwu_pending.
 		 */
-		if (READ_ONCE(cpu_rq(cpu)->poc_idle_committed))
-			WRITE_ONCE(cpu_rq(cpu)->poc_idle_committed, 0);
-		else
-			atomic64_andnot(bit_mask, &sd_share->poc_idle_cpus_mask);
+		atomic64_andnot(bit_mask, &sd_share->poc_idle_cpus_mask);
+		WRITE_ONCE(rq->poc_idle_committed, 1);
 	}
 
 #ifdef CONFIG_SCHED_SMT
@@ -1101,8 +1104,10 @@ static void poc_resync_idle_state(void)
 {
 	int cpu;
 
-	for_each_online_cpu(cpu)
+	for_each_online_cpu(cpu) {
+		WRITE_ONCE(cpu_rq(cpu)->poc_idle_committed, 0);
 		__set_cpu_idle_state_poc(cpu, idle_cpu(cpu));
+	}
 }
 
 /*
