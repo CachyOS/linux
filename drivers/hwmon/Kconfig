@@ -1166,7 +1166,7 @@ config SENSORS_LTQ_CPUTEMP
 
 config SENSORS_MACSMC_HWMON
 	tristate "Apple SMC (Apple Silicon)"
-	depends on MFD_MACSMC && OF
+	depends on MFD_MACSMC_CORE
 	help
 	  This driver enables hwmon support for current, power, temperature,
 	  and voltage sensors, as well as fan speed reporting and control

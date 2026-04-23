@@ -1517,7 +1517,7 @@ config GPIO_LP87565
 
 config GPIO_MACSMC
 	tristate "Apple Mac SMC GPIO"
-	depends on MFD_MACSMC
+	depends on MACSMC_RTKIT
 	help
 	  Support for GPIOs controlled by the SMC microcontroller on Apple Mac
 	  systems.
