@@ -38,6 +38,19 @@ config APPLE_SART
 
 	  Say 'y' here if you have an Apple SoC.
 
+config MACSMC_RTKIT
+	tristate "Apple Silicon System Management Controller (SMC) Backend"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on OF
+	depends on APPLE_RTKIT
+	depends on MFD_MACSMC_CORE
+	help
+	  MACSMC RTKIT allows communicatation with the System Management
+	  Controller on M-series Macs. It is required to use GPIO, control fans
+	  and to control battery start and end threshold.
+
+	  Say 'y' here if you have an Apple Soc
+
 config APPLE_TUNABLE
 	tristate
 	depends on ARCH_APPLE || COMPILE_TEST

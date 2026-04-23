@@ -130,7 +130,7 @@ config POWER_RESET_LINKSTATION
 
 config POWER_RESET_MACSMC
 	tristate "Apple SMC reset/power-off driver"
-	depends on MFD_MACSMC
+	depends on MACSMC_RTKIT
 	help
 	  This driver supports reset and power-off on Apple Mac machines
 	  that implement this functionality via the SMC.
