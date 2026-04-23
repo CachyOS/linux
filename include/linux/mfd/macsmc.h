@@ -175,6 +175,26 @@ struct apple_smc_rtkit {
 	u64 cmd_ret;
 };
 
+/**
+ * struct apple_smc_acpi
+ * @dev: Device struct for the physical backend device
+ * @iomem_base: MMIO base address (virtual address)
+ * @iomem_base_addr: MMIO base address (physical address)
+ * @iomem_base_size: MMIO base size
+ * @is_mmio: True if MMIO is supported
+ * @port_base: PIO base address
+ * @has_port: True if PIO address exists
+ */
+struct apple_smc_acpi {
+	struct device *dev;
+
+	u8 __iomem *iomem_base;
+	u32 iomem_base_addr, iomem_base_size;
+	bool is_mmio;
+
+	u16 port_base;
+	bool has_port;
+};
 
 /**
  * apple_smc_read - Read size bytes from given SMC key into buf
