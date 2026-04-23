@@ -37,32 +37,16 @@ static void ntfs_iomap_read_end_io(struct bio *bio)
 	bio_put(bio);
 }
 
-static int ntfs_iomap_read_folio_range(const struct iomap_iter *iter,
-	struct iomap_read_folio_ctx *ctx, size_t len)
-{
-	int ret = iomap_bio_read_ops.read_folio_range(iter, ctx, len);
-	struct bio *bio = ctx->read_ctx;
-
-	/*
-	 * iomap may submit an accumulated bio mid-range before submit_read
-	 * runs, so install the NTFS end_io on every bio here to ensure the
-	 * straddle-block zeroing happens on all bios, not just the last.
-	 */
-	if (!ret && bio)
-		bio->bi_end_io = ntfs_iomap_read_end_io;
-	return ret;
-}
-
-static void ntfs_iomap_bio_submit_read(struct iomap_read_folio_ctx *ctx)
+static void ntfs_iomap_bio_submit_read(const struct iomap_iter *iter,
+	struct iomap_read_folio_ctx *ctx)
 {
 	struct bio *bio = ctx->read_ctx;
-
-	if (bio)
-		submit_bio(bio);
+	bio->bi_end_io = ntfs_iomap_read_end_io;
+	submit_bio(bio);
 }
 
 static const struct iomap_read_ops ntfs_iomap_bio_read_ops = {
-	.read_folio_range	= ntfs_iomap_read_folio_range,
+	.read_folio_range	= iomap_bio_read_folio_range,
 	.submit_read		= ntfs_iomap_bio_submit_read,
 };
 
