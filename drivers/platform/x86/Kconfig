@@ -201,6 +201,16 @@ config ADV_SWBUTTON
 	  To compile this driver as a module, choose M here. The module will
 	  be called adv_swbutton.
 
+config MACSMC_ACPI
+	tristate "Apple SMC (System Management Controller) ACPI Backend"
+	depends on MFD_MACSMC_CORE
+	help
+	  This driver allows communication with the SMC (System Management Controller)
+	  on Intel-Macs. It is used to control fans, control battery, and more.
+
+	  To compile this driver as a module, choose M here. The module will
+	  be called macsmc_acpi.
+
 config APPLE_GMUX
 	tristate "Apple Gmux Driver"
 	depends on ACPI && PCI
