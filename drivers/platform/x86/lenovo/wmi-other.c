@@ -637,11 +637,7 @@ static int lwmi_psy_ext_set_prop(struct power_supply *ps,
 				 enum power_supply_property prop,
 				 const union power_supply_propval *val)
 {
-<<<<<<< HEAD
-	struct wmi_method_args_32 args = { 0x0, 0x0 };
-=======
 	struct wmi_method_args_32 args = {};
->>>>>>> 7.0/lenovo-wmi
 	struct lwmi_om_priv *priv = ext_data;
 
 	args.arg0 = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPE, LWMI_TYPE_ID_PSU_AC);
@@ -1165,11 +1161,7 @@ static ssize_t attr_current_value_show(struct kobject *kobj,
 		mode = tunable_attr->cv_mode_id;
 
 	args.arg0 = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-<<<<<<< HEAD
-				 tunable_attr->cv_mode_id, tunable_attr->type_id);
-=======
 				 mode, tunable_attr->type_id);
->>>>>>> 7.0/lenovo-wmi
 
 	ret = lwmi_dev_evaluate_int(priv->wdev, 0x0, LWMI_FEATURE_VALUE_GET,
 				    (unsigned char *)&args, sizeof(args),
@@ -1357,11 +1349,7 @@ LWMI_ATTR_GROUP_TUNABLE_CAP01(ppt_pl4_ipl_cl, "ppt_pl4_ipl_cl",
 /* GPU tunable attributes */
 LWMI_ATTR_GROUP_TUNABLE_CAP01(dgpu_boost_clk, "dgpu_boost_clk",
 			      "Set the dedicated GPU boost clock");
-<<<<<<< HEAD
-LWMI_ATTR_GROUP_TUNABLE_CAP01(dgpu_didvid, "gpu_didvid",
-=======
 LWMI_ATTR_GROUP_TUNABLE_CAP01(dgpu_didvid, "dgpu_didvid",
->>>>>>> 7.0/lenovo-wmi
 			      "Get the GPU device identifier and vendor identifier");
 LWMI_ATTR_GROUP_TUNABLE_CAP01(dgpu_enable, "dgpu_enable",
 			      "Set the dedicated Nvidia GPU enabled status");
@@ -1415,19 +1403,11 @@ static void lwmi_om_fw_attr_add(struct lwmi_om_priv *priv)
 	unsigned int i;
 	int err;
 
-<<<<<<< HEAD
-	priv->ida_id = ida_alloc(&lwmi_om_ida, GFP_KERNEL);
-	if (priv->ida_id < 0) {
-		err = priv->ida_id;
-		goto err;
-	}
-=======
 	err = ida_alloc(&lwmi_om_ida, GFP_KERNEL);
 	if (err < 0)
 		goto err_no_ida;
 
 	priv->ida_id = err;
->>>>>>> 7.0/lenovo-wmi
 
 	priv->fw_attr_dev = device_create(&firmware_attributes_class, NULL,
 					  MKDEV(0, 0), NULL, "%s-%u",
@@ -1469,11 +1449,7 @@ err_destroy_classdev:
 err_free_ida:
 	ida_free(&lwmi_om_ida, priv->ida_id);
 
-<<<<<<< HEAD
-err:
-=======
 err_no_ida:
->>>>>>> 7.0/lenovo-wmi
 	priv->ida_id = -EIDRM;
 
 	dev_warn(&priv->wdev->dev,
