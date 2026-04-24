@@ -1960,6 +1960,7 @@ F:	drivers/hwmon/applesmc.c
 MACSMC SUPPORT FOR INTEL MACS
 M:	Atharva Tiwari <atharvatiwarilinuxdev@gmail.com>
 S:	Odd fixes
+F:	drivers/iio/light/macsmc-light.c
 F:	drivers/platform/x86/macsmc-acpi.c
 
 APPLETALK NETWORK LAYER
