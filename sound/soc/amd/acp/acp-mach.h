@@ -33,8 +33,8 @@
 enum be_id {
 	HEADSET_BE_ID = 0,
 	AMP_BE_ID,
-	BT_BE_ID,
 	DMIC_BE_ID,
+	BT_BE_ID,
 };
 
 enum cpu_endpoints {
