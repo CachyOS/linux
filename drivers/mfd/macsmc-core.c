@@ -21,6 +21,7 @@ static const struct mfd_cell apple_smc_devs[] = {
 };
 
 static const struct mfd_cell apple_smc_acpi_devs[] = {
+	MFD_CELL_NAME("macsmc-accel"),
 	MFD_CELL_NAME("macsmc-hwmon"),
 	MFD_CELL_NAME("macsmc-light"),
 	MFD_CELL_NAME("macsmc-power"),
