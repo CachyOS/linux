@@ -1165,13 +1165,12 @@ config SENSORS_LTQ_CPUTEMP
 	  sensor inside your CPU.
 
 config SENSORS_MACSMC_HWMON
-	tristate "Apple SMC (Apple Silicon)"
+	tristate "Apple SMC Hardware monitoring"
 	depends on MFD_MACSMC_CORE
 	help
 	  This driver enables hwmon support for current, power, temperature,
 	  and voltage sensors, as well as fan speed reporting and control
-	  on Apple Silicon devices. Say Y here if you have an Apple Silicon
-	  device.
+	  on Apple devices. Say Y here if you have an Apple device.
 
 	  This driver can also be built as a module. If so, the module will
 	  be called macsmc-hwmon.
