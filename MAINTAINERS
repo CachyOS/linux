@@ -1962,6 +1962,7 @@ M:	Atharva Tiwari <atharvatiwarilinuxdev@gmail.com>
 S:	Odd fixes
 F:	drivers/iio/accel/macsmc-accel.c
 F:	drivers/iio/light/macsmc-light.c
+F:	drivers/input/misc/macsmc-chamshell.c
 F:	drivers/leds/leds-macsmc.c
 F:	drivers/platform/x86/macsmc-acpi.c
 
