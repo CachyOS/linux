@@ -17,6 +17,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/platform_data/x86/apple.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/suspend.h>
@@ -1314,7 +1315,8 @@ static struct platform_driver acpi_battery_driver = {
 
 static int __init acpi_battery_init(void)
 {
-	if (acpi_disabled || acpi_quirk_skip_acpi_ac_and_battery())
+	if (acpi_disabled || acpi_quirk_skip_acpi_ac_and_battery() ||
+			(IS_ENABLED(CONFIG_MACSMC_POWER) && x86_apple_machine))
 		return -ENODEV;
 
 	dmi_check_system(bat_dmi_table);
