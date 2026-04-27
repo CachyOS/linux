@@ -2299,7 +2299,6 @@ extern struct static_key_true sched_poc_aligned;
 extern struct static_key_true sched_poc_smt_consecutive;
 extern struct static_key_true sched_poc_smt_uniform;
 extern struct static_key_false sched_poc_target_sticky;
-extern struct static_key_true sched_poc_eager_commit;
 extern struct static_key_true sched_poc_packed;
 extern struct static_key_false sched_poc_lockless_bitmap;
 extern void __set_cpu_idle_state_poc(int cpu, int state);
@@ -2396,10 +2395,6 @@ static __always_inline u64 poc_cpumask_to_u64(const struct cpumask *mask,
 
 static inline void __set_task_cpu(struct task_struct *p, unsigned int cpu)
 {
-#ifdef CONFIG_SCHED_POC_SELECTOR
-	if (cpu_rq(cpu)->idle_stamp)
-		set_cpu_idle_state_poc(cpu, 0);
-#endif
 	set_task_rq(p, cpu);
 #ifdef CONFIG_SMP
 	/*

@@ -37,7 +37,7 @@
 #define SCHED_POC_SELECTOR_AUTHOR   "Masahito Suzuki"
 #define SCHED_POC_SELECTOR_PROGNAME "Piece-Of-Cake (POC) CPU Selector"
 
-#define SCHED_POC_SELECTOR_VERSION  "2.5.7"
+#define SCHED_POC_SELECTOR_VERSION  "2.6.1"
 
 /**************************************************************
  * Static keys:
@@ -75,27 +75,6 @@ static bool poc_selector_skip;
  * exceeds ~85%, broader SMT search is skipped.
  */
 DEFINE_STATIC_KEY_FALSE(sched_poc_smt_fallback);
-
-/*
- * Eager selection commit: sched_poc_eager_commit
- * (sysctl kernel.sched_poc_eager_commit)
- *
- * When enabled, POC commits the selection to the idle bitmap
- * (atomic64_andnot) at selection time, before returning to the
- * caller.  This closes the race window where multiple waker CPUs
- * read the same stale bitmap and select the same idle CPU.
- *
- * Cost: one LOCK'd atomic op (~20 cycles) per successful
- * POC selection.  The do_idle() exit path still performs
- * an idempotent clear as a safety net for non-POC wakeups.
- *
- * When disabled, the bitmap is only updated when the target
- * CPU exits do_idle().  The per-CPU RR counter still prevents
- * same-CPU burst duplicates.
- *
- * Default: enabled.
- */
-DEFINE_STATIC_KEY_TRUE(sched_poc_eager_commit);
 
 /*
  * SMT consecutive layout: sched_poc_smt_consecutive
@@ -209,6 +188,27 @@ DEFINE_STATIC_KEY_TRUE(sched_poc_aligned);
 DEFINE_STATIC_KEY_TRUE(sched_poc_packed);
 
 /*
+ * Improved RR strategy: sched_poc_rr_improved
+ * (sysctl kernel.sched_poc_rr_improved)
+ *
+ * When enabled (default), idle CPU selection in poc_select_rr,
+ * poc_cluster_search, and the packed priority search uses an
+ * improved RR strategy combining two techniques:
+ *   1. total size case-split (1/2/>=3): direct / interleave / full
+ *   2. golden-ratio scrambling (Lemire fastrange)
+ *
+ * When disabled, the current strategy is used unchanged:
+ *   - poc_select_rr:   poc_rr_step[] table (perfect RR)
+ *   - poc_cluster_search: ctz lowest-bit selection (no RR)
+ *   - packed search:   ror32(counter & 31)
+ *
+ * The current path is preserved as the A/B-testing baseline;
+ * once the improved path is validated, the legacy code will
+ * be removed in a follow-up.
+ */
+DEFINE_STATIC_KEY_TRUE(sched_poc_rr_improved);
+
+/*
  * Lockless bitmap mode: sched_poc_lockless_bitmap
  * (sysctl kernel.sched_poc_lockless_bitmap)
  *
@@ -270,6 +270,19 @@ static __always_inline void poc_count(enum poc_level lv)
  */
 
 /*
+ * POC_HASH_MULT / POC_SCRAMBLE — Golden-ratio scrambling
+ *
+ * Multiplying a 32-bit counter by ⌊2^32 / φ⌋ = 0x9E3779B9 scatters
+ * consecutive values across the 32-bit output space with good
+ * avalanche properties (Knuth's multiplicative hash, TAOCP Vol. 3).
+ * The scrambled value feeds POC_FASTRANGE for uniform [0, range)
+ * mapping in the improved RR path, or is used directly with a bit
+ * shift to derive an uncorrelated rotation amount in packed search.
+ */
+#define POC_HASH_MULT 0x9E3779B9U  /* golden ratio * 2^32 */
+#define POC_SCRAMBLE(counter) ((u32)(counter) * POC_HASH_MULT)
+
+/*
  * Per-CPU round-robin counter for idle CPU selection.
  * Each CPU starts at a different offset to reduce cross-CPU
  * collision probability.  Combined with poc_rr_step[] and
@@ -298,6 +311,20 @@ static DEFINE_PER_CPU(u32, poc_rr_counter);
  *   so floor(k*S*N / 2^16) = k.  QED.
  */
 #define POC_FIXED_MOD16(phase, range) ((u32)(((u32)(phase) * (u32)(range)) >> 16))
+
+/*
+ * POC_FASTRANGE — Map a 32-bit scrambled value to [0, range)
+ *
+ * Implements Lemire's fastrange technique:
+ *   D. Lemire, "Fast Random Integer Generation in an Interval",
+ *   ACM Trans. Model. Comput. Simul. 29, 1, Article 3, 2019.
+ *
+ * Computes (seed * range) >> 32, giving a uniform mapping of
+ * a 32-bit seed into [0, range) using only one 64-bit multiply
+ * and a shift.  Used with golden-ratio hashing for pseudo-random
+ * RR distribution in the improved RR path.
+ */
+#define POC_FASTRANGE(seed, range) ((u32)(((u64)(seed) * (u32)(range)) >> 32))
 
 /*
  * RR step table: poc_rr_step[n-1] = ceil(2^16 / n) for n = 1..64
@@ -671,6 +698,53 @@ void __set_cpu_idle_state_poc(int cpu, int state)
 #define POC_CPU_IN_LLC(bit)	((unsigned int)(bit) < 64)
 
 /*
+ * poc_select_rr_improved - Improved round-robin idle CPU selection
+ * @base: poc_cpu_base (smallest CPU ID in this LLC)
+ * @mask: idle bitmask (snapshot, caller guarantees non-zero)
+ * @counter: per-CPU round-robin counter value
+ *
+ * Improved RR with two techniques:
+ *   1. Case-split by total:
+ *      total=1: direct ctz
+ *      total=2: interleave by counter LSB (guarantees non-repeat),
+ *               single CTZ via cmov-selected source mask
+ *      total>=3: golden-ratio scramble + Lemire fastrange
+ *   2. Golden-ratio scrambling (counter * 0x9E3779B9) mapped via
+ *      Lemire fastrange for pseudo-random uniform distribution.
+ *
+ * eager_commit (unconditional) already prevents burst wake-ups from
+ * re-selecting the same CPU by clearing the bitmap bit at selection
+ * time, so no previous-pick exclusion state is needed here.
+ *
+ * Returns: selected CPU number.
+ */
+static __always_inline int poc_select_rr_improved(
+	int base, u64 mask, unsigned int counter)
+{
+	int total = hweight64(mask);
+
+	if (total <= 2) {
+		/*
+		 * Pick the lower or upper set bit via counter LSB if total == 2.
+		 * Select the mask first (cmov), then one CTZ — halves the
+		 * cost on archs where CTZ64 is a SW fallback (De Bruijn).
+		 */
+		if ((total == 2) && (counter & 1))
+			mask &= mask - 1;
+
+		return base + POC_CTZ64(mask);
+	}
+
+	/* total >= 3: golden-ratio scramble + Lemire fastrange */
+	{
+		u32 scrambled = POC_SCRAMBLE(counter);
+		int pick = POC_FASTRANGE(scrambled, total);
+
+		return base + POC_PTSELECT(mask, pick);
+	}
+}
+
+/*
  * poc_select_rr - Round-robin idle CPU selection from a single-word mask
  * @base: poc_cpu_base (smallest CPU ID in this LLC)
  * @mask: idle bitmask (snapshot)
@@ -684,11 +758,17 @@ void __set_cpu_idle_state_poc(int cpu, int state)
  */
 static __always_inline int poc_select_rr(int base, u64 mask, unsigned int counter)
 {
-	int total = hweight64(mask);
-	u16 phase = (u16)(counter * (u32)poc_rr_step[total - 1]);
-	int pick  = POC_FIXED_MOD16(phase, total);
+	if (static_branch_likely(&sched_poc_rr_improved))
+		return poc_select_rr_improved(base, mask, counter);
 
-	return POC_PTSELECT(mask, pick) + base;
+	/* Current strategy: poc_rr_step[] table (perfect RR), unchanged */
+	{
+		int total = hweight64(mask);
+		u16 phase = (u16)(counter * (u32)poc_rr_step[total - 1]);
+		int pick  = POC_FIXED_MOD16(phase, total);
+
+		return POC_PTSELECT(mask, pick) + base;
+	}
 }
 
 /*
@@ -706,10 +786,17 @@ static __always_inline int poc_cluster_search(int base, int tgt_bit,
 {
 	u64 cls_idle = mask & sd_share->poc_cluster_mask[tgt_bit];
 
-	if (cls_idle)
-		return base + POC_CTZ64(cls_idle);
+	if (!cls_idle)
+		return -1;
 
-	return -1;
+	if (static_branch_likely(&sched_poc_rr_improved)) {
+		/* Improved path: inc counter here so LV3 fallback sees fresh value */
+		unsigned int counter = __this_cpu_inc_return(poc_rr_counter);
+		return poc_select_rr_improved(base, cls_idle, counter);
+	}
+
+	/* Current strategy: ctz lowest-bit (no RR), unchanged */
+	return base + POC_CTZ64(cls_idle);
 }
 
 #ifdef CONFIG_SCHED_SMT
@@ -800,16 +887,17 @@ static __always_inline int poc_try_idle_smt(int base, int cpu,
  * @cpu: the CPU number selected by POC
  * @sd_share: per-LLC shared data
  *
- * When sched_poc_eager_commit is enabled, clears the selected CPU's
- * bit in poc_idle_cpus_mask at selection time to close the race
- * window between selection and do_idle() exit.
- * Gated by static key — zero cost when disabled.
+ * Clears the selected CPU's bit in poc_idle_cpus_mask at selection
+ * time to close the race window where multiple waker CPUs read the
+ * same stale bitmap and select the same idle CPU.  The do_idle()
+ * exit path performs an idempotent clear as a safety net for
+ * non-POC wakeups; poc_idle_committed gates that path so the atomic
+ * fires at most once per selection.
  */
 static __always_inline void poc_commit_selection(int cpu,
 	struct sched_domain_shared *sd_share)
 {
-	if (static_branch_likely(&sched_poc_eager_commit) &&
-			cpu_rq(cpu)->nr_running <= 2) {
+	if (cpu_rq(cpu)->nr_running <= 2) {
 		int bit = cpu - sd_share->poc_cpu_base;
 
 		if (static_branch_unlikely(&sched_poc_lockless_bitmap)) {
@@ -1041,16 +1129,23 @@ static __always_inline int select_idle_cpu_poc(int target, int prev,
 		*
 		* Packs cluster candidates (high priority) into lower 32 bits
 		* and all LLC candidates (low priority) into upper 32 bits.
-		* ror32-based rotation distributes selections across idle CPUs;
-		* a single TZCNT resolves the highest-priority idle CPU.
+		* A single TZCNT resolves the highest-priority idle CPU.
 		* Level discrimination: (raw >> 5) yields 0 (cluster) or 1 (LLC).
+		*
+		* rr_improved=ON: rotation amount via golden-ratio scramble.
+		* rr_improved=OFF: rotation amount is (counter & 31).
 		*/
 		unsigned int counter = __this_cpu_inc_return(poc_rr_counter);
-		int rot = counter & 31;
+		int rot;
 		u32 cls = 0;
 		u32 all;
 		u64 packed;
 		int raw, bit;
+
+		if (static_branch_likely(&sched_poc_rr_improved))
+			rot = (int)(POC_SCRAMBLE(counter) >> 27);
+		else
+			rot = counter & 31;
 
 		if (static_branch_likely(&sched_cluster_active) &&
 				sd_share->poc_cluster_valid)
@@ -1230,11 +1325,11 @@ static int sched_poc_smt_fallback_sysctl_handler(const struct ctl_table *table,
 	return ret;
 }
 
-static int sched_poc_eager_commit_sysctl_handler(const struct ctl_table *table,
+static int sched_poc_rr_improved_sysctl_handler(const struct ctl_table *table,
 					     int write, void *buffer,
 					     size_t *lenp, loff_t *ppos)
 {
-	unsigned int val = static_branch_likely(&sched_poc_eager_commit) ? 1 : 0;
+	unsigned int val = static_branch_likely(&sched_poc_rr_improved) ? 1 : 0;
 	struct ctl_table tmp = {
 		.data    = &val,
 		.maxlen  = sizeof(val),
@@ -1245,9 +1340,9 @@ static int sched_poc_eager_commit_sysctl_handler(const struct ctl_table *table,
 
 	if (!ret && write) {
 		if (val)
-			static_branch_enable(&sched_poc_eager_commit);
+			static_branch_enable(&sched_poc_rr_improved);
 		else
-			static_branch_disable(&sched_poc_eager_commit);
+			static_branch_disable(&sched_poc_rr_improved);
 	}
 	return ret;
 }
@@ -1385,11 +1480,11 @@ static struct ctl_table sched_poc_sysctls[] = {
 		.proc_handler	= sched_poc_smt_fallback_sysctl_handler,
 	},
 	{
-		.procname	= "sched_poc_eager_commit",
+		.procname	= "sched_poc_rr_improved",
 		.data		= NULL,
 		.maxlen		= sizeof(unsigned int),
 		.mode		= 0644,
-		.proc_handler	= sched_poc_eager_commit_sysctl_handler,
+		.proc_handler	= sched_poc_rr_improved_sysctl_handler,
 	},
 	{
 		.procname	= "sched_poc_target_sticky",
