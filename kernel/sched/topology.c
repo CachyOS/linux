@@ -1699,8 +1699,15 @@ sd_init(struct sched_domain_topology_level *tl,
 	/*
 	 * Convert topological properties into behaviour.
 	 */
-	/* Don't attempt to spread across CPUs of different capacities. */
-	if ((sd->flags & SD_ASYM_CPUCAPACITY) && sd->child)
+	/*
+	 * Don't attempt to spread across CPUs of different capacities. An
+	 * exception to this rule are domains in which there are clusters of
+	 * CPUs sharing a resource. Keep the flag in such case to balance load
+	 * among them. The load balancer will prevent task migrations from
+	 * high- to low-capacity CPUs.
+	 */
+	if ((sd->flags & SD_ASYM_CPUCAPACITY) && sd->child &&
+	    !(sd->child->flags & SD_CLUSTER))
 		sd->child->flags &= ~SD_PREFER_SIBLING;
 
 	if (sd->flags & SD_SHARE_CPUCAPACITY) {
