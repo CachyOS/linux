@@ -11610,9 +11610,14 @@ static struct rq *sched_balance_find_src_rq(struct lb_env *env,
 		 * eventually lead to active_balancing high->low capacity.
 		 * Higher per-CPU capacity is considered better than balancing
 		 * average load.
+		 *
+		 * Cluster scheduling requires balancing load across clusters
+		 * of identical capacity. Use architectural capacity to ignore
+		 * runtime variability.
 		 */
 		if (env->sd->flags & SD_ASYM_CPUCAPACITY &&
-		    !capacity_greater(capacity_of(env->dst_cpu), capacity) &&
+		    arch_scale_cpu_capacity(env->dst_cpu) != arch_scale_cpu_capacity(i) &&
+		    capacity_greater(capacity, capacity_of(env->dst_cpu)) &&
 		    nr_running == 1)
 			continue;
 
