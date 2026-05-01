@@ -1759,7 +1759,7 @@ static void __init cpu_parse_early_param(void)
 
 	/* Minimize the gap between FRED is available and available but disabled. */
 	arglen = cmdline_find_option(boot_command_line, "fred", arg, sizeof(arg));
-	if (arglen != 2 || strncmp(arg, "on", 2))
+	if (arglen > 0 && (arglen != 2 || strncmp(arg, "on", 2)))
 		setup_clear_cpu_cap(X86_FEATURE_FRED);
 
 	arglen = cmdline_find_option(boot_command_line, "clearcpuid", arg, sizeof(arg));
