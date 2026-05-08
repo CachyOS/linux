@@ -245,7 +245,7 @@ static int rxrpc_verify_response(struct rxrpc_connection *conn,
 {
 	int ret;
 
-	if (skb_cloned(skb)) {
+	if (skb_cloned(skb) || skb->data_len) {
 		/* Copy the packet if shared so that we can do in-place
 		 * decryption.
 		 */
