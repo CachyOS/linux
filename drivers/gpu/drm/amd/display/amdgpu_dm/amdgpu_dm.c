@@ -13537,33 +13537,23 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 			amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_EDP;
 		}
 
-	/* HDMI */
-	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A) {
+	/* HDMI and DP -> HDMI PCONs */
+	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A || pcon_allowed) {
 		/* Prefer HDMI VRR */
 		if (hdmi_vrr.supported) {
 			amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_HDMI;
 			aconn_range_from_hdmi(amdgpu_dm_connector, &hdmi_vrr, &vsdb_info);
 		} else if (vsdb_info.freesync_supported) {
-			aconn_range_from_vsdb(amdgpu_dm_connector, &vsdb_info);
-			check_mccs_freesync = true;
-		}
-
-		freesync_capable = is_freesync_capable(amdgpu_dm_connector);
-	}
-
-	/* DP -> HDMI PCON */
-	} else if (pcon_allowed) {
-		/* Prefer HDMI VRR */
-		if (hdmi_vrr.supported)
-			aconn_range_from_hdmi(amdgpu_dm_connector, &hdmi_vrr, &vsdb_info);
-		else if (vsdb_info.freesync_supported) {
 			amdgpu_dm_connector->vsdb_info = vsdb_info;
 			aconn_range_from_vsdb(amdgpu_dm_connector, &vsdb_info);
 			check_mccs_freesync = true;
 		}
 
-		amdgpu_dm_connector->pack_sdp_v1_3 = true;
-		amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_PCON_ALLOWED;
+		if (pcon_allowed) {
+			amdgpu_dm_connector->pack_sdp_v1_3 = true;
+			amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_PCON_ALLOWED;
+		}
+
 		freesync_capable = is_freesync_capable(amdgpu_dm_connector);
 	}
 
