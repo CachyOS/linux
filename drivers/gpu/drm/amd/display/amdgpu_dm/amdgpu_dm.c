@@ -13390,6 +13390,17 @@ static void extend_range_from_vsdb(struct amdgpu_dm_connector *aconn,
 		aconn->min_vfreq = vsdb->min_refresh_rate_hz;
 }
 
+static bool mccs_is_freesync_available(const struct dc_sink *sink)
+{
+	if (!sink->edid_caps.freesync_vcp_code)
+		return false;
+
+	if (!sink->mccs_caps.freesync_supported)
+		return false;
+
+	return true;
+}
+
 /**
  * amdgpu_dm_update_freesync_caps - Update Freesync capabilities
  *
@@ -13417,6 +13428,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	struct amdgpu_hdmi_vsdb_info vsdb_did = {0};
 	struct dpcd_caps dpcd_caps = {0};
 	const struct edid *edid;
+	bool check_mccs_freesync = false;
 	bool freesync_capable = false;
 	bool is_pcon = false;
 	enum adaptive_sync_type as_type = ADAPTIVE_SYNC_TYPE_NONE;
@@ -13493,6 +13505,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A && vsdb_info.freesync_supported) {
 		aconn_range_from_vsdb(amdgpu_dm_connector, &vsdb_info);
 		freesync_capable = is_freesync_capable(amdgpu_dm_connector);
+		check_mccs_freesync = true;
 	}
 
 	if (amdgpu_dm_connector->dc_link && is_pcon)
@@ -13506,13 +13519,14 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 
 		aconn_range_from_vsdb(amdgpu_dm_connector, &vsdb_info);
 		freesync_capable = is_freesync_capable(amdgpu_dm_connector);
+		check_mccs_freesync = true;
 	}
 
 	/* Handle MCCS */
 	if (do_mccs) {
 		dm_helpers_read_mccs_caps(adev->dm.dc->ctx, amdgpu_dm_connector->dc_link, sink);
 
-		if (sink->edid_caps.freesync_vcp_code && !sink->mccs_caps.freesync_supported)
+		if (check_mccs_freesync && !mccs_is_freesync_available(sink))
 			freesync_capable = false;
 
 		if (sink->mccs_caps.freesync_supported && freesync_capable)
