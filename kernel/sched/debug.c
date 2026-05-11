@@ -593,6 +593,7 @@ int cgroup_mode = 1;
 static const char *cgroup_mode_str[] = {
 	"up",
 	"smp",
+	"max",
 };
 
 static int sched_cgroup_mode(const char *str)
