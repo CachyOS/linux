@@ -4796,8 +4796,13 @@ static int isolate_folios(unsigned long nr_to_scan, struct lruvec *lruvec,
 			*isolate_scanned = scanned;
 			break;
 		}
-
-		type = !type;
+		/*
+		 * If scanned > 0 and isolated == 0, avoid falling back to the
+		 * other type, as this type remains sufficient. Falling back
+		 * too readily can disrupt the positive_ctrl_err() bias.
+		 */
+		if (!scanned)
+			type = !type;
 	}
 
 	return total_scanned;
@@ -4917,17 +4922,13 @@ static long get_nr_to_scan(struct lruvec *lruvec, struct scan_control *sc,
 	unsigned long nr_to_scan, evictable;
 
 	evictable = lruvec_evictable_size(lruvec, swappiness);
-	nr_to_scan = evictable;
 
 	/* try to scrape all its memory if this memcg was deleted */
 	if (!mem_cgroup_online(memcg))
-		return nr_to_scan;
+		return evictable;
 
-	nr_to_scan = apply_proportional_protection(memcg, sc, nr_to_scan);
+	nr_to_scan = apply_proportional_protection(memcg, sc, evictable);
 	nr_to_scan >>= sc->priority;
-
-	if (!nr_to_scan && sc->priority < DEF_PRIORITY)
-		nr_to_scan = min(evictable, SWAP_CLUSTER_MAX);
 
 	return nr_to_scan;
 }
