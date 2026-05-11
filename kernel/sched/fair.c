@@ -3986,7 +3986,7 @@ static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
  *
  * hence icky!
  */
-static long calc_group_shares(struct cfs_rq *cfs_rq)
+static long calc_smp_shares(struct cfs_rq *cfs_rq)
 {
 	long tg_weight, tg_shares, load, shares;
 	struct task_group *tg = cfs_rq->tg;
@@ -4018,6 +4018,25 @@ static long calc_group_shares(struct cfs_rq *cfs_rq)
 	 * instead of 0.
 	 */
 	return clamp_t(long, shares, MIN_SHARES, tg_shares);
+}
+
+/*
+ * Ignore this pesky SMP stuff, use (4).
+ */
+static long calc_up_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	return READ_ONCE(tg->shares);
+}
+
+static long calc_group_shares(struct cfs_rq *cfs_rq)
+{
+	int mode = READ_ONCE(cgroup_mode);
+
+	if (mode == 0)
+		return calc_up_shares(cfs_rq);
+
+	return calc_smp_shares(cfs_rq);
 }
 
 /*

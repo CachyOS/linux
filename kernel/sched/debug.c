@@ -588,9 +588,10 @@ static void debugfs_fair_server_init(void)
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-int cgroup_mode = 0;
+int cgroup_mode = 1;
 
 static const char *cgroup_mode_str[] = {
+	"up",
 	"smp",
 };
 
