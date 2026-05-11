@@ -4047,6 +4047,30 @@ static long calc_max_shares(struct cfs_rq *cfs_rq)
 	return __calc_smp_shares(cfs_rq, tg_shares * nr, max_shares);
 }
 
+static inline int tg_tasks(struct task_group *tg)
+{
+	return max(1, atomic_long_read(&tg->tasks));
+}
+
+/*
+ * Func: min(fraction(num * tg->shares), nice -20); where
+ *       num = min(nr_tasks, nr_cpus)
+ *
+ * Similar to max, except scale with min(nr_tasks, nr_cpus), which gives
+ * a far more natural distrubution. Can still create edge case using CPU
+ * affinity.
+ */
+static long calc_concur_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	int nr_cpus = tg_cpus(tg);
+	int nr_tasks = tg_tasks(tg);
+	int nr = min(nr_tasks, nr_cpus);
+	long tg_shares = READ_ONCE(tg->shares);
+	long max_shares = scale_load(sched_prio_to_weight[0]);
+	return __calc_smp_shares(cfs_rq, nr * tg_shares, max_shares);
+}
+
 /*
  * Func: fraction(tg->shares)
  *
@@ -4076,6 +4100,9 @@ static long calc_group_shares(struct cfs_rq *cfs_rq)
 		return calc_up_shares(cfs_rq);
 
 	if (mode == 2)
+		return calc_concur_shares(cfs_rq);
+
+	if (mode == 3)
 		return calc_max_shares(cfs_rq);
 
 	return calc_smp_shares(cfs_rq);
@@ -4221,7 +4248,7 @@ static inline bool cfs_rq_is_decayed(struct cfs_rq *cfs_rq)
  */
 static inline void update_tg_load_avg(struct cfs_rq *cfs_rq)
 {
-	long delta;
+	long delta, dt;
 	u64 now;
 
 	/*
@@ -4243,16 +4270,19 @@ static inline void update_tg_load_avg(struct cfs_rq *cfs_rq)
 		return;
 
 	delta = cfs_rq->avg.load_avg - cfs_rq->tg_load_avg_contrib;
-	if (abs(delta) > cfs_rq->tg_load_avg_contrib / 64) {
+	dt = cfs_rq->h_nr_queued - cfs_rq->tg_tasks_contrib;
+	if (dt || abs(delta) > cfs_rq->tg_load_avg_contrib / 64) {
 		atomic_long_add(delta, &cfs_rq->tg->load_avg);
+		atomic_long_add(dt, &cfs_rq->tg->tasks);
 		cfs_rq->tg_load_avg_contrib = cfs_rq->avg.load_avg;
+		cfs_rq->tg_tasks_contrib = cfs_rq->h_nr_queued;
 		cfs_rq->last_update_tg_load_avg = now;
 	}
 }
 
 static inline void clear_tg_load_avg(struct cfs_rq *cfs_rq)
 {
-	long delta;
+	long delta, dt;
 	u64 now;
 
 	/*
@@ -4263,8 +4293,11 @@ static inline void clear_tg_load_avg(struct cfs_rq *cfs_rq)
 
 	now = sched_clock_cpu(cpu_of(rq_of(cfs_rq)));
 	delta = 0 - cfs_rq->tg_load_avg_contrib;
+	dt = 0 - cfs_rq->tg_tasks_contrib;
 	atomic_long_add(delta, &cfs_rq->tg->load_avg);
+	atomic_long_add(dt, &cfs_rq->tg->tasks);
 	cfs_rq->tg_load_avg_contrib = 0;
+	cfs_rq->tg_tasks_contrib = 0;
 	cfs_rq->last_update_tg_load_avg = now;
 }
 
