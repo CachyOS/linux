@@ -1714,12 +1714,6 @@ static bool _psr_compute_config(struct intel_dp *intel_dp,
 	if (!CAN_PSR(intel_dp) || !display->params.enable_psr)
 		return false;
 
-	/*
-	 * Currently PSR doesn't work reliably with VRR enabled.
-	 */
-	if (crtc_state->vrr.enable)
-		return false;
-
 	entry_setup_frames = intel_psr_entry_setup_frames(intel_dp, conn_state, adjusted_mode);
 
 	if (entry_setup_frames >= 0) {
