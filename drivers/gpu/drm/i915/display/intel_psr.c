@@ -1215,6 +1215,8 @@ static void tgl_psr2_disable_dc3co(struct intel_dp *intel_dp)
 	psr2_program_idle_frames(intel_dp, psr_compute_idle_frames(intel_dp));
 }
 
+static void intel_psr_activate(struct intel_dp *intel_dp);
+
 static void tgl_dc3co_disable_work(struct work_struct *work)
 {
 	struct intel_dp *intel_dp =
@@ -1224,6 +1226,13 @@ static void tgl_dc3co_disable_work(struct work_struct *work)
 	/* If delayed work is pending, it is not idle */
 	if (delayed_work_pending(&intel_dp->psr.dc3co_work))
 		goto unlock;
+
+	/* Panel Replay ALPM cursor-lag workaround re-activation path. */
+	if (intel_dp->psr.panel_replay_enabled &&
+	    intel_dp->psr.enabled && !intel_dp->psr.active) {
+		intel_psr_activate(intel_dp);
+		goto unlock;
+	}
 
 	tgl_psr2_disable_dc3co(intel_dp);
 unlock:
@@ -4665,4 +4674,31 @@ bool intel_psr_use_trans_push(const struct intel_crtc_state *crtc_state)
 	struct intel_display *display = to_intel_display(crtc_state);
 
 	return HAS_PSR_TRANS_PUSH_FRAME_CHANGE(display) && crtc_state->has_psr;
+}
+
+/*
+ * intel_psr_panel_replay_exit - exit Panel Replay during frontbuffer activity
+ *
+ * Exits PR on frontbuffer flush and arms dc3co_work with a 50 ms
+ * delay. Each subsequent flush cancels and rearms the timer. When it
+ * finally fires, tgl_dc3co_disable_work re-activates PR.
+ */
+void intel_psr_panel_replay_exit(struct intel_display *display)
+{
+	struct intel_encoder *encoder;
+
+	for_each_intel_encoder_with_psr(display->drm, encoder) {
+		struct intel_dp *intel_dp = enc_to_intel_dp(encoder);
+
+		mutex_lock(&intel_dp->psr.lock);
+		if (intel_dp->psr.panel_replay_enabled &&
+		    intel_dp->psr.sel_update_enabled) {
+			if (intel_dp->psr.active)
+				intel_psr_exit(intel_dp);
+			mod_delayed_work(display->wq.unordered,
+					 &intel_dp->psr.dc3co_work,
+					 msecs_to_jiffies(50));
+		}
+		mutex_unlock(&intel_dp->psr.lock);
+	}
 }
