@@ -2130,6 +2130,9 @@ static void intel_psr_enable_source(struct intel_dp *intel_dp,
 		intel_dmc_block_pkgc(display, intel_dp->psr.pipe, true);
 
 	intel_alpm_configure(intel_dp, crtc_state);
+
+	if (intel_psr_use_trans_push(crtc_state))
+		intel_vrr_psr_frame_change_enable(crtc_state);
 }
 
 static bool psr_interrupt_error_check(struct intel_dp *intel_dp)
@@ -2522,9 +2525,11 @@ void intel_psr_trigger_frame_change_event(struct intel_dsb *dsb,
 		intel_pre_commit_crtc_state(state, crtc);
 	struct intel_display *display = to_intel_display(crtc);
 
-	if (crtc_state->has_psr)
-		intel_de_write_dsb(display, dsb,
-				   CURSURFLIVE(display, crtc->pipe), 0);
+	if (!crtc_state->has_psr || intel_psr_use_trans_push(crtc_state))
+		return;
+
+	intel_de_write_dsb(display, dsb,
+			   CURSURFLIVE(display, crtc->pipe), 0);
 }
 
 /**
@@ -4613,4 +4618,11 @@ int intel_psr_min_guardband(struct intel_crtc_state *crtc_state)
 		psr_min_guardband++;
 
 	return psr_min_guardband;
+}
+
+bool intel_psr_use_trans_push(const struct intel_crtc_state *crtc_state)
+{
+	struct intel_display *display = to_intel_display(crtc_state);
+
+	return HAS_PSR_TRANS_PUSH_FRAME_CHANGE(display) && crtc_state->has_panel_replay;
 }
