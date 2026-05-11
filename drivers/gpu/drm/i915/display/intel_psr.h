@@ -40,6 +40,7 @@ int intel_psr_debug_set(struct intel_dp *intel_dp, u64 value);
 void intel_psr_invalidate(struct intel_display *display,
 			  unsigned frontbuffer_bits,
 			  enum fb_op_origin origin);
+void intel_psr_panel_replay_exit(struct intel_display *display);
 void intel_psr_flush(struct intel_display *display,
 		     unsigned frontbuffer_bits,
 		     enum fb_op_origin origin);
