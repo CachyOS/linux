@@ -317,7 +317,7 @@ static void lnl_alpm_configure(struct intel_dp *intel_dp,
 			ALPM_CTL_AUX_LESS_SLEEP_HOLD_TIME_50_SYMBOLS |
 			ALPM_CTL_AUX_LESS_WAKE_TIME(crtc_state->alpm_state.aux_less_wake_lines);
 
-		if (intel_dp->as_sdp_supported) {
+		if (intel_dp->as_sdp_supported && crtc_state->has_panel_replay) {
 			u32 pr_alpm_ctl = PR_ALPM_CTL_ADAPTIVE_SYNC_SDP_POSITION_T1;
 
 			if (crtc_state->link_off_after_as_sdp_when_pr_active)
@@ -430,8 +430,8 @@ void intel_alpm_enable_sink(struct intel_dp *intel_dp,
 
 	val = DP_ALPM_ENABLE | DP_ALPM_LOCK_ERROR_IRQ_HPD_ENABLE;
 
-	if (crtc_state->has_panel_replay || (crtc_state->has_lobf &&
-					     intel_alpm_aux_less_wake_supported(intel_dp)))
+	if (intel_psr_needs_alpm_aux_less(intel_dp, crtc_state) ||
+	    (crtc_state->has_lobf && intel_alpm_aux_less_wake_supported(intel_dp)))
 		val |= DP_ALPM_MODE_AUX_LESS;
 
 	drm_dp_dpcd_writeb(&intel_dp->aux, DP_RECEIVER_ALPM_CONFIG, val);

@@ -688,13 +688,32 @@ intel_vrr_dcb_reset(const struct intel_crtc_state *old_crtc_state,
 	intel_de_write(display, PIPEDMC_DCB_BALANCE_RESET(pipe), 0);
 }
 
+static u32 trans_vrr_push(const struct intel_crtc_state *crtc_state,
+				  bool send_push)
+{
+	struct intel_display *display = to_intel_display(crtc_state);
+	u32 trans_vrr_push = 0;
+
+	if (intel_vrr_always_use_vrr_tg(display) ||
+	    crtc_state->vrr.enable)
+		trans_vrr_push |= TRANS_PUSH_EN;
+
+	if (send_push)
+		trans_vrr_push |= TRANS_PUSH_SEND;
+
+	if (intel_psr_use_trans_push(crtc_state))
+		trans_vrr_push |= LNL_TRANS_PUSH_PSR_PR_EN;
+
+	return trans_vrr_push;
+}
+
 void intel_vrr_send_push(struct intel_dsb *dsb,
 			 const struct intel_crtc_state *crtc_state)
 {
 	struct intel_display *display = to_intel_display(crtc_state);
 	enum transcoder cpu_transcoder = crtc_state->cpu_transcoder;
 
-	if (!crtc_state->vrr.enable)
+	if (!crtc_state->vrr.enable && !intel_psr_use_trans_push(crtc_state))
 		return;
 
 	if (dsb)
@@ -702,7 +721,7 @@ void intel_vrr_send_push(struct intel_dsb *dsb,
 
 	intel_de_write_dsb(display, dsb,
 			   TRANS_PUSH(display, cpu_transcoder),
-			   TRANS_PUSH_EN | TRANS_PUSH_SEND);
+			   trans_vrr_push(crtc_state, true));
 
 	if (dsb)
 		intel_dsb_nonpost_end(dsb);
@@ -888,7 +907,8 @@ static void intel_vrr_tg_enable(const struct intel_crtc_state *crtc_state,
 	enum transcoder cpu_transcoder = crtc_state->cpu_transcoder;
 	u32 vrr_ctl;
 
-	intel_de_write(display, TRANS_PUSH(display, cpu_transcoder), TRANS_PUSH_EN);
+	intel_de_write(display, TRANS_PUSH(display, cpu_transcoder),
+		       trans_vrr_push(crtc_state, false));
 
 	vrr_ctl = VRR_CTL_VRR_ENABLE | trans_vrr_ctl(crtc_state);
 
@@ -916,7 +936,8 @@ static void intel_vrr_tg_disable(const struct intel_crtc_state *old_crtc_state)
 				       VRR_STATUS_VRR_EN_LIVE, 1000))
 		drm_err(display->drm, "Timed out waiting for VRR live status to clear\n");
 
-	intel_de_write(display, TRANS_PUSH(display, cpu_transcoder), 0);
+	intel_de_rmw(display, TRANS_PUSH(display, cpu_transcoder),
+		     TRANS_PUSH_EN, 0);
 }
 
 void intel_vrr_enable(const struct intel_crtc_state *crtc_state)
@@ -969,6 +990,15 @@ void intel_vrr_transcoder_disable(const struct intel_crtc_state *old_crtc_state)
 
 	if (intel_vrr_always_use_vrr_tg(display))
 		intel_vrr_tg_disable(old_crtc_state);
+}
+
+void intel_vrr_psr_frame_change_enable(const struct intel_crtc_state *crtc_state)
+{
+	struct intel_display *display = to_intel_display(crtc_state);
+	enum transcoder cpu_transcoder = crtc_state->cpu_transcoder;
+
+	intel_de_write(display, TRANS_PUSH(display, cpu_transcoder),
+		       trans_vrr_push(crtc_state, false));
 }
 
 bool intel_vrr_is_fixed_rr(const struct intel_crtc_state *crtc_state)
