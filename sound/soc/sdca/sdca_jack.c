@@ -37,20 +37,12 @@ int sdca_jack_process(struct sdca_interrupt *interrupt)
 	struct device *dev = interrupt->dev;
 	struct snd_soc_component *component = interrupt->component;
 	struct snd_soc_card *card = component->card;
-	struct rw_semaphore *rwsem;
+	struct rw_semaphore *rwsem = &card->snd_card->controls_rwsem;
 	struct jack_state *state = interrupt->priv;
-	struct snd_kcontrol *kctl;
+	struct snd_kcontrol *kctl = state->kctl;
 	struct snd_ctl_elem_value *ucontrol __free(kfree) = NULL;
 	unsigned int reg, val;
 	int ret;
-
-	if (!card || !card->snd_card) {
-		dev_dbg(dev, "card not yet bound, deferring jack event\n");
-		return -ENODEV;
-	}
-
-	rwsem = &card->snd_card->controls_rwsem;
-	kctl = state->kctl;
 
 	guard(rwsem_write)(rwsem);
 
