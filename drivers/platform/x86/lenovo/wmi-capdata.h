@@ -27,8 +27,6 @@ enum lwmi_device_id {
 
 #define LWMI_TYPE_ID_NONE 0x00
 
-#define LWMI_TYPE_ID_NONE 0x00
-
 struct component_match;
 struct device;
 struct cd_list;
@@ -40,7 +38,10 @@ struct capdata00 {
 };
 
 struct capdata01 {
-	struct capdata00;
+	union {
+		struct capdata00;
+		struct capdata00 cd00;
+	};
 	u32 step;
 	u32 min_value;
 	u32 max_value;

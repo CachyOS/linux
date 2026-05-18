@@ -77,8 +77,16 @@ enum lwmi_feature_id_gpu {
 	LWMI_FEATURE_ID_GPU_NV_CPU_BOOST =	0x0b,
 };
 
+enum lwmi_feature_id_psu {
+	LWMI_FEATURE_ID_PSU_CHARGE_TYPES =	0x01,
+	LWMI_FEATURE_ID_PSU_CHARGE_BEHAVIOUR =	0x02,
+};
+
 #define LWMI_FEATURE_ID_FAN_RPM		0x03
 #define LWMI_FEATURE_ID_PSU_CHARGE_TYPE	0x01
+
+#define LWMI_TYPE_ID_CROSSLOAD	0x01
+#define LWMI_TYPE_ID_PSU_AC	0x01
 
 #define LWMI_TYPE_ID_CROSSLOAD	0x01
 #define LWMI_TYPE_ID_PSU_AC	0x01
@@ -92,6 +100,8 @@ enum lwmi_feature_id_gpu {
 
 #define LWMI_FAN_DIV 100
 
+#define LWMI_CHARGE_BEHAVIOR_DISCHARGE	0x00
+#define LWMI_CHARGE_BEHAVIOR_AUTO	0x01
 #define LWMI_CHARGE_TYPE_STANDARD	0x00
 #define LWMI_CHARGE_TYPE_LONGLIFE	0x01
 
@@ -143,6 +153,8 @@ struct lwmi_om_priv {
 		bool capdata_fan_collected : 1;
 	} fan_flags;
 
+	enum power_supply_charge_behaviour charge_behaviour;
+	const struct power_supply_ext *battery_ext;
 	struct acpi_battery_hook battery_hook;
 	bool bh_registered;
 };
@@ -175,6 +187,16 @@ MODULE_PARM_DESC(relax_fan_constraint,
 	"and enables fan tuning when such data is missing. "
 	"Enabling this may results in HWMON attributes being out-of-sync, "
 	"and setting a too low RPM stops the fan. Use with caution.");
+
+/* Visibility of power supply extensions */
+static bool force_load_psy_ext;
+module_param(force_load_psy_ext, bool, 0444);
+MODULE_PARM_DESC(force_load_psy_ext,
+	"This option will skip checking if the ideapad_laptop driver will conflict "
+	"with adding an extension to set the battery charge behavior and battery charge "
+	"control end threshold. It will also skip checking if the BIOS reports that "
+	"those features are fully supported. It is recommended to blacklist the ideapad "
+	"driver before using this option.");
 
 /* ======== HWMON (component: lenovo-wmi-capdata 00 & fan) ======== */
 
@@ -577,11 +599,11 @@ out:
  * lwmi_psy_ext_get_prop() - Get a power_supply_ext property
  * @ps: The battery that was extended
  * @ext: The extension
- * @ext_data: Pointer the lwmi_om_priv drvdata
+ * @ext_data: Pointer to the lwmi_om_priv drvdata
  * @prop: The property to read
  * @val: The value to return
  *
- * Writes the given value to the power_supply_ext property
+ * Reads the given value from the power_supply_ext property
  *
  * Return: 0 on success, or an error
  */
@@ -591,15 +613,26 @@ static int lwmi_psy_ext_get_prop(struct power_supply *ps,
 				 enum power_supply_property prop,
 				 union power_supply_propval *val)
 {
-	struct wmi_method_args_32 args = {};
 	struct lwmi_om_priv *priv = ext_data;
+	struct wmi_method_args_32 args = {};
 	u32 retval;
 	int ret;
 
-	args.arg0 = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPE, LWMI_TYPE_ID_PSU_AC);
+	switch (prop) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		/* Reading from BIOS reads the wrong bit. Use cached value */
+		val->intval = priv->charge_behaviour;
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_TYPES:
+		args.arg0 = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPES,
+					     LWMI_TYPE_ID_PSU_AC);
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	ret = lwmi_dev_evaluate_int(priv->wdev, 0x0, LWMI_FEATURE_VALUE_GET,
-				    (unsigned char *)&args, sizeof(args),
+				    (u8 *)&args, sizeof(args),
 				    &retval);
 	if (ret)
 		return ret;
@@ -614,7 +647,7 @@ static int lwmi_psy_ext_get_prop(struct power_supply *ps,
 		val->intval = POWER_SUPPLY_CHARGE_TYPE_STANDARD;
 		break;
 	default:
-		dev_err(&priv->wdev->dev, "Got invalid charge value: %#x\n", retval);
+		dev_err(&priv->wdev->dev, "Got invalid charge limit value: %#x\n", retval);
 		return -EINVAL;
 	}
 
@@ -625,7 +658,7 @@ static int lwmi_psy_ext_get_prop(struct power_supply *ps,
  * lwmi_psy_ext_set_prop() - Set a power_supply_ext property
  * @ps: The battery that was extended
  * @ext: The extension
- * @ext_data: Pointer the lwmi_om_priv drvdata
+ * @ext_data: Pointer to the lwmi_om_priv drvdata
  * @prop: The property to write
  * @val: The value to write
  *
@@ -639,19 +672,44 @@ static int lwmi_psy_ext_set_prop(struct power_supply *ps,
 				 enum power_supply_property prop,
 				 const union power_supply_propval *val)
 {
-	struct wmi_method_args_32 args = {};
 	struct lwmi_om_priv *priv = ext_data;
+	struct wmi_method_args_32 args = {};
 
-	args.arg0 = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPE, LWMI_TYPE_ID_PSU_AC);
-	switch (val->intval) {
-	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
-		args.arg1 = LWMI_CHARGE_TYPE_LONGLIFE;
+	switch (prop) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		args.arg0 = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_BEHAVIOUR,
+					     LWMI_TYPE_ID_NONE);
+		switch (val->intval) {
+		case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+			args.arg1 = LWMI_CHARGE_BEHAVIOR_AUTO;
+			break;
+		case POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE:
+			args.arg1 = LWMI_CHARGE_BEHAVIOR_DISCHARGE;
+			break;
+		default:
+			dev_err(&priv->wdev->dev, "Got invalid charge behavior value: %#x\n",
+				val->intval);
+			return -EINVAL;
+		}
+		priv->charge_behaviour = val->intval;
 		break;
-	case POWER_SUPPLY_CHARGE_TYPE_STANDARD:
-		args.arg1 = LWMI_CHARGE_TYPE_STANDARD;
+	case POWER_SUPPLY_PROP_CHARGE_TYPES:
+		args.arg0 = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPES,
+					     LWMI_TYPE_ID_PSU_AC);
+		switch (val->intval) {
+		case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
+			args.arg1 = LWMI_CHARGE_TYPE_LONGLIFE;
+			break;
+		case POWER_SUPPLY_CHARGE_TYPE_STANDARD:
+			args.arg1 = LWMI_CHARGE_TYPE_STANDARD;
+			break;
+		default:
+			dev_err(&priv->wdev->dev, "Got invalid charge limit value: %#x\n",
+				val->intval);
+			return -EINVAL;
+		}
 		break;
 	default:
-		dev_err(&priv->wdev->dev, "Got invalid charge value: %#x\n", val->intval);
 		return -EINVAL;
 	}
 
@@ -659,31 +717,65 @@ static int lwmi_psy_ext_set_prop(struct power_supply *ps,
 		args.arg0, prop, args.arg1);
 
 	return lwmi_dev_evaluate_int(priv->wdev, 0x0, LWMI_FEATURE_VALUE_SET,
-				     (unsigned char *)&args, sizeof(args), NULL);
+				     (u8 *)&args, sizeof(args), NULL);
+}
+
+/** lwmi_psy_prop_get_supported() - Gets the support level from capdata for a given property
+ * @priv: Pointer to the lwmi_om_priv drvdata
+ * @prop: The power supply property to be evaluated
+ *
+ * Return: capability data support level, or an error
+ */
+static int lwmi_psy_prop_get_supported(struct lwmi_om_priv *priv, enum power_supply_property prop)
+{
+	struct capdata00 capdata;
+	u32 attribute_id;
+	int ret;
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		attribute_id = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_BEHAVIOUR,
+						LWMI_TYPE_ID_NONE);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_TYPES:
+		attribute_id = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPES,
+						LWMI_TYPE_ID_PSU_AC);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	ret = lwmi_cd00_get_data(priv->cd00_list, attribute_id, &capdata);
+	if (ret)
+		return ret;
+
+	dev_dbg(&priv->wdev->dev, "Battery charge feature (%#010x) support level: %#x\n",
+		attribute_id, capdata.supported);
+
+	return capdata.supported;
 }
 
 /**
  * lwmi_psy_prop_is_supported() - Determine if the property is supported
- * @priv: Pointer the lwmi_om_priv drvdata
+ * @priv: Pointer to the lwmi_om_priv drvdata
+ * @prop: The power supply property to be evaluated
  *
  * Checks capdata 00 to determine if the property is supported.
  *
  * Return: true if readable, or false
  */
-static bool lwmi_psy_prop_is_supported(struct lwmi_om_priv *priv)
+static bool lwmi_psy_prop_is_supported(struct lwmi_om_priv *priv, enum power_supply_property prop)
 {
-	u32 attribute_id = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPE, LWMI_TYPE_ID_PSU_AC);
-	struct capdata00 capdata;
 	int ret;
 
-	ret = lwmi_cd00_get_data(priv->cd00_list, attribute_id, &capdata);
-	if (ret)
+	if (force_load_psy_ext)
+		return true;
+
+	ret = lwmi_psy_prop_get_supported(priv, prop);
+	if (ret < 0)
 		return false;
 
-	dev_dbg(&priv->wdev->dev, "Battery charge mode (%#010x) support level: %#x\n",
-		attribute_id, capdata.supported);
-
-	return ((capdata.supported & LWMI_SUPP_VALID) && (capdata.supported & LWMI_SUPP_GET));
+	return (ret & LWMI_SUPP_VALID) && (ret & LWMI_SUPP_GET);
 }
 
 /**
@@ -702,31 +794,64 @@ static int lwmi_psy_prop_is_writeable(struct power_supply *ps,
 				      void *ext_data,
 				      enum power_supply_property prop)
 {
-	u32 attribute_id = LWMI_ATTR_ID_PSU(LWMI_FEATURE_ID_PSU_CHARGE_TYPE, LWMI_TYPE_ID_PSU_AC);
 	struct lwmi_om_priv *priv = ext_data;
-	struct capdata00 capdata;
 	int ret;
 
-	ret = lwmi_cd00_get_data(priv->cd00_list, attribute_id, &capdata);
-	if (ret)
+	if (force_load_psy_ext)
+		return true;
+
+	ret = lwmi_psy_prop_get_supported(priv, prop);
+	if (ret < 0)
 		return false;
 
-	return !!(capdata.supported & LWMI_SUPP_SET);
+	return !!(ret & LWMI_SUPP_SET);
 }
 
-static const enum power_supply_property lwmi_psy_ext_props[] = {
+#define DEFINE_LWMI_POWER_SUPPLY_EXTENSION(_name, _props, _behaviours, _types)	\
+	static const struct power_supply_ext _name = {				\
+		.name			= LWMI_OM_SYSFS_NAME,			\
+		.properties		= _props,				\
+		.num_properties		= ARRAY_SIZE(_props),			\
+		.charge_behaviours	= _behaviours,				\
+		.charge_types		= _types,				\
+		.get_property		= lwmi_psy_ext_get_prop,		\
+		.set_property		= lwmi_psy_ext_set_prop,		\
+		.property_is_writeable	= lwmi_psy_prop_is_writeable,		\
+	}
+
+static const enum power_supply_property lwmi_psy_ext_props_all[] = {
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
 	POWER_SUPPLY_PROP_CHARGE_TYPES,
 };
 
-static const struct power_supply_ext lwmi_psy_ext = {
-	.name			= LWMI_OM_SYSFS_NAME,
-	.properties		= lwmi_psy_ext_props,
-	.num_properties		= ARRAY_SIZE(lwmi_psy_ext_props),
-	.charge_types		= (BIT(POWER_SUPPLY_CHARGE_TYPE_STANDARD) |
-				   BIT(POWER_SUPPLY_CHARGE_TYPE_LONGLIFE)),
-	.get_property		= lwmi_psy_ext_get_prop,
-	.set_property		= lwmi_psy_ext_set_prop,
-	.property_is_writeable	= lwmi_psy_prop_is_writeable,
+static const enum power_supply_property lwmi_psy_ext_props_types[] = {
+	POWER_SUPPLY_PROP_CHARGE_TYPES,
+};
+
+static const enum power_supply_property lwmi_psy_ext_props_behaviour[] = {
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+};
+
+#define LWMI_CHARGE_BEHAVIOURS (BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) | \
+				BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE))
+
+#define LWMI_CHARGE_TYPES (BIT(POWER_SUPPLY_CHARGE_TYPE_STANDARD) | \
+			   BIT(POWER_SUPPLY_CHARGE_TYPE_LONGLIFE))
+
+DEFINE_LWMI_POWER_SUPPLY_EXTENSION(lwmi_psy_ext_all, lwmi_psy_ext_props_all,
+				   LWMI_CHARGE_BEHAVIOURS, LWMI_CHARGE_TYPES);
+DEFINE_LWMI_POWER_SUPPLY_EXTENSION(lwmi_psy_ext_types, lwmi_psy_ext_props_types,
+				   0, LWMI_CHARGE_TYPES);
+DEFINE_LWMI_POWER_SUPPLY_EXTENSION(lwmi_psy_ext_behaviour, lwmi_psy_ext_props_behaviour,
+				   LWMI_CHARGE_BEHAVIOURS, 0);
+
+#define LWMI_PSY_PROP_BEHAVIOUR BIT(0)
+#define LWMI_PSY_PROP_TYPES BIT(1)
+
+static const struct power_supply_ext *lwmi_psy_exts[] = {
+	[LWMI_PSY_PROP_BEHAVIOUR] =				&lwmi_psy_ext_behaviour,
+	[LWMI_PSY_PROP_TYPES] =					&lwmi_psy_ext_types,
+	[LWMI_PSY_PROP_BEHAVIOUR | LWMI_PSY_PROP_TYPES] =	&lwmi_psy_ext_all,
 };
 
 /**
@@ -740,7 +865,7 @@ static int lwmi_add_battery(struct power_supply *battery, struct acpi_battery_ho
 {
 	struct lwmi_om_priv *priv = container_of(hook, struct lwmi_om_priv, battery_hook);
 
-	return power_supply_register_extension(battery, &lwmi_psy_ext, &priv->wdev->dev, priv);
+	return power_supply_register_extension(battery, priv->battery_ext, &priv->wdev->dev, priv);
 }
 
 /**
@@ -752,7 +877,9 @@ static int lwmi_add_battery(struct power_supply *battery, struct acpi_battery_ho
  */
 static int lwmi_remove_battery(struct power_supply *battery, struct acpi_battery_hook *hook)
 {
-	power_supply_unregister_extension(battery, &lwmi_psy_ext);
+	struct lwmi_om_priv *priv = container_of(hook, struct lwmi_om_priv, battery_hook);
+
+	power_supply_unregister_extension(battery, priv->battery_ext);
 	return 0;
 }
 
@@ -781,35 +908,30 @@ static acpi_status lwmi_acpi_match(acpi_handle handle, u32 lvl,
 	return AE_CTRL_TERMINATE;
 }
 
-static bool force_load_psy_ext;
-module_param(force_load_psy_ext, bool, 0444);
-MODULE_PARM_DESC(force_load_psy_ext,
-	"This option will skip checking if the ideapad_laptop driver will conflict "
-	"with adding an extension to set the battery charge type. It is recommended "
-	"to blacklist the ideapad driver before using this option.");
-
 /**
  * lwmi_om_psy_ext_init() - Hooks power supply extension to device battery
- * @priv: Driver private data
+ * @priv: Pointer to the lwmi_om_priv drvdata.
  *
- * Checks if the ideapad_laptop driver is going to manage charge_type first,
- * then if not, hooks the battery to our WMI methods.
+ * Checks if the ideapad_laptop driver is going to manage charge attributes first,
+ * then if not, hooks the battery to our WMI methods if they are supported.
  */
 static void lwmi_om_psy_ext_init(struct lwmi_om_priv *priv)
 {
 	static const char * const ideapad_hid = "VPC2004";
 	acpi_handle handle = NULL;
+	unsigned int props = 0;
 	int ret;
 
-	priv->bh_registered = false;
-
-	/* Deconflict ideapad_laptop driver */
+	if (lwmi_psy_prop_is_supported(priv, POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR))
+		props |= LWMI_PSY_PROP_BEHAVIOUR;
+	if (lwmi_psy_prop_is_supported(priv, POWER_SUPPLY_PROP_CHARGE_TYPES))
+		props |= LWMI_PSY_PROP_TYPES;
+	if (!props)
+		return;
 	if (force_load_psy_ext)
 		goto load_psy_ext;
 
-	if (!lwmi_psy_prop_is_supported(priv))
-		return;
-
+	/* Deconflict ideapad_laptop driver */
 	ret = acpi_get_devices(ideapad_hid, lwmi_acpi_match, &handle, NULL);
 	if (ret)
 		return;
@@ -821,6 +943,7 @@ static void lwmi_om_psy_ext_init(struct lwmi_om_priv *priv)
 
 load_psy_ext:
 	/* Add battery hooks */
+	priv->battery_ext = lwmi_psy_exts[props];
 	priv->battery_hook.add_battery = lwmi_add_battery;
 	priv->battery_hook.remove_battery = lwmi_remove_battery;
 	priv->battery_hook.name = "Lenovo WMI Other Battery Extension";
