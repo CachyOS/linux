@@ -5091,13 +5091,86 @@ static void detach_entity_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 	trace_pelt_cfs_tp(cfs_rq);
 }
 
+#define UTIL_EST_MARGIN (SCHED_CAPACITY_SCALE / 100)
+
+static inline void util_est_update(struct sched_entity *se)
+{
+	unsigned int ewma, dequeued, last_ewma_diff;
+
+	if (!sched_feat(UTIL_EST))
+		return;
+
+	/* Get current estimate of utilization */
+	ewma = READ_ONCE(se->avg.util_est);
+
+	/*
+	 * If the PELT values haven't changed since enqueue time,
+	 * skip the util_est update.
+	 */
+	if (ewma & UTIL_AVG_UNCHANGED)
+		return;
+
+	/* Get utilization at dequeue */
+	dequeued = READ_ONCE(se->avg.util_avg);
+
+	/*
+	 * Reset EWMA on utilization increases, the moving average is used only
+	 * to smooth utilization decreases.
+	 */
+	if (ewma <= dequeued) {
+		ewma = dequeued;
+		goto done;
+	}
+
+	/*
+	 * Skip update of task's estimated utilization when its members are
+	 * already ~1% close to its last activation value.
+	 */
+	last_ewma_diff = ewma - dequeued;
+	if (last_ewma_diff < UTIL_EST_MARGIN)
+		goto done;
+
+	/*
+	 * To avoid underestimate of task utilization, skip updates of EWMA if
+	 * we cannot grant that thread got all CPU time it wanted.
+	 */
+	if ((dequeued + UTIL_EST_MARGIN) < READ_ONCE(se->avg.runnable_avg))
+		goto done;
+
+	/*
+	 * Update Task's estimated utilization
+	 *
+	 * When *p completes an activation we can consolidate another sample
+	 * of the task size. This is done by using this value to update the
+	 * Exponential Weighted Moving Average (EWMA):
+	 *
+	 *  ewma(t) = w *  task_util(p) + (1-w) * ewma(t-1)
+	 *          = w *  task_util(p) +         ewma(t-1)  - w * ewma(t-1)
+	 *          = w * (task_util(p) -         ewma(t-1)) +     ewma(t-1)
+	 *          = w * (      -last_ewma_diff           ) +     ewma(t-1)
+	 *          = w * (-last_ewma_diff +  ewma(t-1) / w)
+	 *
+	 * Where 'w' is the weight of new samples, which is configured to be
+	 * 0.25, thus making w=1/4 ( >>= UTIL_EST_WEIGHT_SHIFT)
+	 */
+	ewma <<= UTIL_EST_WEIGHT_SHIFT;
+	ewma  -= last_ewma_diff;
+	ewma >>= UTIL_EST_WEIGHT_SHIFT;
+done:
+	ewma |= UTIL_AVG_UNCHANGED;
+	WRITE_ONCE(se->avg.util_est, ewma);
+
+	trace_sched_util_est_se_tp(se);
+}
+
 /*
  * Optional action to be done while updating the load average
  */
-#define UPDATE_TG	0x1
-#define SKIP_AGE_LOAD	0x2
-#define DO_ATTACH	0x4
-#define DO_DETACH	0x8
+#define UPDATE_TG	0x01
+#define SKIP_AGE_LOAD	0x02
+#define DO_ATTACH	0x04
+#define DO_DETACH	0x08
+#define UPDATE_UTIL_EST	0x10
 
 /* Update task and its cfs_rq load average */
 static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
@@ -5140,6 +5213,9 @@ static inline void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *s
 		if (flags & UPDATE_TG)
 			update_tg_load_avg(cfs_rq);
 	}
+
+	if (flags & UPDATE_UTIL_EST)
+		util_est_update(se);
 }
 
 /*
@@ -5198,11 +5274,6 @@ static inline unsigned long task_util(struct task_struct *p)
 	return READ_ONCE(p->se.avg.util_avg);
 }
 
-static inline unsigned long task_runnable(struct task_struct *p)
-{
-	return READ_ONCE(p->se.avg.runnable_avg);
-}
-
 static inline unsigned long _task_util_est(struct task_struct *p)
 {
 	return READ_ONCE(p->se.avg.util_est) & ~UTIL_AVG_UNCHANGED;
@@ -5243,88 +5314,6 @@ static inline void util_est_dequeue(struct cfs_rq *cfs_rq,
 	WRITE_ONCE(cfs_rq->avg.util_est, enqueued);
 
 	trace_sched_util_est_cfs_tp(cfs_rq);
-}
-
-#define UTIL_EST_MARGIN (SCHED_CAPACITY_SCALE / 100)
-
-static inline void util_est_update(struct cfs_rq *cfs_rq,
-				   struct task_struct *p,
-				   bool task_sleep)
-{
-	unsigned int ewma, dequeued, last_ewma_diff;
-
-	if (!sched_feat(UTIL_EST))
-		return;
-
-	/*
-	 * Skip update of task's estimated utilization when the task has not
-	 * yet completed an activation, e.g. being migrated.
-	 */
-	if (!task_sleep)
-		return;
-
-	/* Get current estimate of utilization */
-	ewma = READ_ONCE(p->se.avg.util_est);
-
-	/*
-	 * If the PELT values haven't changed since enqueue time,
-	 * skip the util_est update.
-	 */
-	if (ewma & UTIL_AVG_UNCHANGED)
-		return;
-
-	/* Get utilization at dequeue */
-	dequeued = task_util(p);
-
-	/*
-	 * Reset EWMA on utilization increases, the moving average is used only
-	 * to smooth utilization decreases.
-	 */
-	if (ewma <= dequeued) {
-		ewma = dequeued;
-		goto done;
-	}
-
-	/*
-	 * Skip update of task's estimated utilization when its members are
-	 * already ~1% close to its last activation value.
-	 */
-	last_ewma_diff = ewma - dequeued;
-	if (last_ewma_diff < UTIL_EST_MARGIN)
-		goto done;
-
-	/*
-	 * To avoid underestimate of task utilization, skip updates of EWMA if
-	 * we cannot grant that thread got all CPU time it wanted.
-	 */
-	if ((dequeued + UTIL_EST_MARGIN) < task_runnable(p))
-		goto done;
-
-
-	/*
-	 * Update Task's estimated utilization
-	 *
-	 * When *p completes an activation we can consolidate another sample
-	 * of the task size. This is done by using this value to update the
-	 * Exponential Weighted Moving Average (EWMA):
-	 *
-	 *  ewma(t) = w *  task_util(p) + (1-w) * ewma(t-1)
-	 *          = w *  task_util(p) +         ewma(t-1)  - w * ewma(t-1)
-	 *          = w * (task_util(p) -         ewma(t-1)) +     ewma(t-1)
-	 *          = w * (      -last_ewma_diff           ) +     ewma(t-1)
-	 *          = w * (-last_ewma_diff +  ewma(t-1) / w)
-	 *
-	 * Where 'w' is the weight of new samples, which is configured to be
-	 * 0.25, thus making w=1/4 ( >>= UTIL_EST_WEIGHT_SHIFT)
-	 */
-	ewma <<= UTIL_EST_WEIGHT_SHIFT;
-	ewma  -= last_ewma_diff;
-	ewma >>= UTIL_EST_WEIGHT_SHIFT;
-done:
-	ewma |= UTIL_AVG_UNCHANGED;
-	WRITE_ONCE(p->se.avg.util_est, ewma);
-
-	trace_sched_util_est_se_tp(&p->se);
 }
 
 static inline unsigned long get_actual_cpu_capacity(int cpu)
