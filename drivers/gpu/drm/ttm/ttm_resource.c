@@ -292,6 +292,19 @@ void ttm_resource_del_bulk_move(struct ttm_resource *res,
 		ttm_lru_bulk_move_del(bo->bulk_move, res);
 }
 
+/*
+ * Remove a resource from its bulk_move, bypassing the unevictable check.
+ * Use only when the resource is known to still be tracked in the range despite
+ * the BO having just become unevictable; asserts that this is the case.
+ */
+void ttm_resource_del_bulk_move_unevictable(struct ttm_resource *res,
+					    struct ttm_buffer_object *bo)
+{
+	WARN_ON_ONCE(!ttm_resource_unevictable(res, bo));
+	if (bo->bulk_move)
+		ttm_lru_bulk_move_del(bo->bulk_move, res);
+}
+
 /* Move a resource to the LRU or bulk tail */
 void ttm_resource_move_to_lru_tail(struct ttm_resource *res)
 {
@@ -393,6 +406,7 @@ int ttm_resource_try_charge(struct ttm_buffer_object *bo,
 {
 	struct ttm_resource_manager *man =
 		ttm_manager_type(bo->bdev, place->mem_type);
+	int ret;
 
 	if (!man->cg) {
 		*ret_pool = NULL;
@@ -401,8 +415,12 @@ int ttm_resource_try_charge(struct ttm_buffer_object *bo,
 		return 0;
 	}
 
-	return dmem_cgroup_try_charge(man->cg, bo->base.size, ret_pool,
+	ret = dmem_cgroup_try_charge(man->cg, bo->base.size, ret_pool,
 				      ret_limit_pool);
+	if (ret == -EAGAIN)
+		return -ENOSPC;
+
+	return ret;
 }
 
 int ttm_resource_alloc(struct ttm_buffer_object *bo,

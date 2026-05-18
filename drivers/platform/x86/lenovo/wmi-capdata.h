@@ -27,6 +27,8 @@ enum lwmi_device_id {
 
 #define LWMI_TYPE_ID_NONE 0x00
 
+#define LWMI_TYPE_ID_NONE 0x00
+
 struct component_match;
 struct device;
 struct cd_list;
@@ -70,7 +72,7 @@ struct lwmi_cd_binder {
  * @mode_id: The u8 corresponding to the wmi-gamezone mode for set/get.
  * @type_id: The u8 corresponding to the sub-device.
  *
- * Return: u32.
+ * Return: encoded capability data attribute ID.
  */
 static inline u32 lwmi_attr_id(u8 dev_id, u8 feat_id, u8 mode_id, u8 type_id)
 {

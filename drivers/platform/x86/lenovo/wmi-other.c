@@ -855,6 +855,18 @@ struct tunable_attr_01 {
 	u8 cv_mode_id; /* mode arg for set/get current_value */
 };
 
+/**
+ * tunable_attr_01_id() - Formats a tunable_attr_01 to a capdata attribute ID
+ * @attr: The tunable_attr_01 to format.
+ * @mode: The u8 corresponding to the wmi-gamezone mode for set/get.
+ *
+ * Return: encoded capability data attribute ID.
+ */
+static u32 tunable_attr_01_id(struct tunable_attr_01 *attr, u8 mode)
+{
+	return lwmi_attr_id(attr->device_id, attr->feature_id, mode, attr->type_id);
+}
+
 static struct tunable_attr_01 ppt_pl1_spl = {
 	.device_id = LWMI_DEVICE_ID_CPU,
 	.feature_id = LWMI_FEATURE_ID_CPU_SPL,
@@ -1036,8 +1048,7 @@ static ssize_t attr_capdata01_show(struct kobject *kobj,
 	u32 attribute_id;
 	int value, ret;
 
-	attribute_id = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-				    LWMI_GZ_THERMAL_MODE_CUSTOM, tunable_attr->type_id);
+	attribute_id = tunable_attr_01_id(tunable_attr, tunable_attr->cd_mode_id);
 
 	ret = lwmi_cd01_get_data(priv->cd01_list, attribute_id, &capdata);
 	if (ret)
@@ -1102,8 +1113,7 @@ static ssize_t attr_current_value_store(struct kobject *kobj,
 	if (mode != LWMI_GZ_THERMAL_MODE_CUSTOM)
 		return -EBUSY;
 
-	args.arg0 = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-				 tunable_attr->cd_mode_id, tunable_attr->type_id);
+	args.arg0 = tunable_attr_01_id(tunable_attr, tunable_attr->cd_mode_id);
 
 	ret = lwmi_cd01_get_data(priv->cd01_list, args.arg0, &capdata);
 	if (ret)
@@ -1116,8 +1126,7 @@ static ssize_t attr_current_value_store(struct kobject *kobj,
 	if (value < capdata.min_value || value > capdata.max_value)
 		return -EINVAL;
 
-	args.arg0 = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-				 tunable_attr->cv_mode_id, tunable_attr->type_id);
+	args.arg0 = tunable_attr_01_id(tunable_attr, tunable_attr->cv_mode_id);
 	args.arg1 = value;
 
 	ret = lwmi_dev_evaluate_int(priv->wdev, 0x0, LWMI_FEATURE_VALUE_SET,
@@ -1162,8 +1171,7 @@ static ssize_t attr_current_value_show(struct kobject *kobj,
 	if (tunable_attr->cv_mode_id == LWMI_GZ_THERMAL_MODE_NONE)
 		mode = tunable_attr->cv_mode_id;
 
-	args.arg0 = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-				 mode, tunable_attr->type_id);
+	args.arg0 = tunable_attr_01_id(tunable_attr, mode);
 
 	ret = lwmi_dev_evaluate_int(priv->wdev, 0x0, LWMI_FEATURE_VALUE_GET,
 				    (unsigned char *)&args, sizeof(args),
@@ -1178,19 +1186,23 @@ static ssize_t attr_current_value_show(struct kobject *kobj,
  * lwmi_attr_01_is_supported() - Determine if the given attribute is supported.
  * @tunable_attr: The attribute to verify.
  *
- * First check if the attribute has a corresponding capdata01 table in the cd01
- * module under the "custom" mode (0xff). If that is not present then check if
- * there is a corresponding "no-mode" (0x00) entry. If either of those passes,
- * check capdata->supported for values > 0. If capdata is available, attempt to
- * determine the set/get mode for the current value property using a similar
- * pattern. If the value returned by either custom or no-mode is 0, or we get
- * an error, we assume that mode is not supported. If any of the above checks
- * fail then the attribute is not fully supported.
+ * For an attribute to be supported it must have a functional get/set method,
+ * as well as associated capability data stored in the capdata01 table.
  *
- * The probed cd_mode_id/cv_mode_id are stored on the tunable_attr for later
- * reference.
+ * First check if the attribute has a corresponding data table under custom mode
+ * (0xff), then under no mode (0x00). If either of those passes, check if the
+ * supported field of the capdata struct is > 0. If it is supported, store the
+ * successful mode in the cd_mode_id field of tunable_attr.
  *
- * Return: bool.
+ * If the attribute capdata shows it is supported, attempt to determine the mode
+ * for the current value property get/set methods using a similar pattern to the
+ * capdata table check. If the value returned by either mode is 0 or an error,
+ * assume that mode is not supported. Otherwise, store the successful mode in the
+ * cv_mode_id field of tunable_attr.
+ *
+ * If any of the above checks fail then the attribute is not fully supported.
+ *
+ * Return: true if capdata and set/get modes are found, otherwise false.
  */
 static bool lwmi_attr_01_is_supported(struct tunable_attr_01 *tunable_attr)
 {
@@ -1202,14 +1214,14 @@ static bool lwmi_attr_01_is_supported(struct tunable_attr_01 *tunable_attr)
 	struct capdata01 capdata;
 	int retval, ret, i;
 
-	/* Determine tunable_attr->cd_mode_id*/
+	/* Determine tunable_attr->cd_mode_id */
 	for (i = 0; i < ARRAY_SIZE(modes); i++) {
-		args.arg0 = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-					 modes[i], tunable_attr->type_id);
+		args.arg0 = tunable_attr_01_id(tunable_attr, modes[i]);
 
 		ret = lwmi_cd01_get_data(priv->cd01_list, args.arg0, &capdata);
 		if (ret || !capdata.supported)
 			continue;
+
 		tunable_attr->cd_mode_id = modes[i];
 		cd_mode_found = true;
 		break;
@@ -1218,16 +1230,19 @@ static bool lwmi_attr_01_is_supported(struct tunable_attr_01 *tunable_attr)
 	if (!cd_mode_found)
 		return cd_mode_found;
 
-	/* Determine tunable_attr->cv_mode_id, returns 1 if supported*/
+	dev_dbg(tunable_attr->dev,
+		"cd_mode_id: %#010x\n", args.arg0);
+
+	/* Determine tunable_attr->cv_mode_id, returns 1 if supported */
 	for (i = 0; i < ARRAY_SIZE(modes); i++) {
-		args.arg0 = lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-					 modes[i], tunable_attr->type_id);
+		args.arg0 = tunable_attr_01_id(tunable_attr, modes[i]);
 
 		ret = lwmi_dev_evaluate_int(priv->wdev, 0x0, LWMI_FEATURE_VALUE_GET,
-					    (unsigned char *)&args, sizeof(args),
+					    (u8 *)&args, sizeof(args),
 					    &retval);
 		if (ret || !retval)
 			continue;
+
 		tunable_attr->cv_mode_id = modes[i];
 		cv_mode_found = true;
 		break;
@@ -1236,13 +1251,10 @@ static bool lwmi_attr_01_is_supported(struct tunable_attr_01 *tunable_attr)
 	if (!cv_mode_found)
 		return cv_mode_found;
 
-	dev_dbg(tunable_attr->dev,
-		"cd_mode_id: %#010x, cv_mode_id: %#010x, attribute support level: %#010x\n",
-		lwmi_attr_id(tunable_attr->device_id, tunable_attr->feature_id,
-			     tunable_attr->cd_mode_id, tunable_attr->type_id),
+	dev_dbg(tunable_attr->dev, "cv_mode_id: %#010x, attribute support level: %#010x\n",
 		args.arg0, capdata.supported);
 
-	return capdata.supported > 0 ? true : false;
+	return capdata.supported > 0;
 }
 
 /* Lenovo WMI Other Mode Attribute macros */
