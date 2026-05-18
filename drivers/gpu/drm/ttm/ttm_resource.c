@@ -406,7 +406,6 @@ int ttm_resource_try_charge(struct ttm_buffer_object *bo,
 {
 	struct ttm_resource_manager *man =
 		ttm_manager_type(bo->bdev, place->mem_type);
-	int ret;
 
 	if (!man->cg) {
 		*ret_pool = NULL;
@@ -415,12 +414,8 @@ int ttm_resource_try_charge(struct ttm_buffer_object *bo,
 		return 0;
 	}
 
-	ret = dmem_cgroup_try_charge(man->cg, bo->base.size, ret_pool,
+	return dmem_cgroup_try_charge(man->cg, bo->base.size, ret_pool,
 				      ret_limit_pool);
-	if (ret == -EAGAIN)
-		return -ENOSPC;
-
-	return ret;
 }
 
 int ttm_resource_alloc(struct ttm_buffer_object *bo,
