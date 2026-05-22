@@ -1199,9 +1199,41 @@ err:
 	return ret;
 }
 
+static int cs35l41_boot(struct cs35l41_private *cs35l41)
+{
+	u32 int_status;
+	int ret;
+
+	if (cs35l41->reset_gpio) {
+		/* satisfy minimum reset pulse width spec */
+		gpiod_set_value_cansleep(cs35l41->reset_gpio, 0);
+		usleep_range(2000, 2100);
+		gpiod_set_value_cansleep(cs35l41->reset_gpio, 1);
+	}
+
+	usleep_range(2000, 2100);
+
+	ret = regmap_read_poll_timeout(cs35l41->regmap, CS35L41_IRQ1_STATUS4,
+				       int_status, int_status & CS35L41_OTP_BOOT_DONE,
+				       1000, 100000);
+	if (ret) {
+		dev_err_probe(cs35l41->dev, ret,
+			      "Failed waiting for OTP_BOOT_DONE\n");
+		return ret;
+	}
+
+	regmap_read(cs35l41->regmap, CS35L41_IRQ1_STATUS3, &int_status);
+	if (int_status & CS35L41_OTP_BOOT_ERR) {
+		dev_err(cs35l41->dev, "OTP Boot error\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *hw_cfg)
 {
-	u32 regid, reg_revid, i, mtl_revid, int_status, chipid_match;
+	u32 regid, reg_revid, i, mtl_revid, chipid_match;
 	int irq_pol = 0;
 	int ret;
 
@@ -1242,29 +1274,10 @@ int cs35l41_probe(struct cs35l41_private *cs35l41, const struct cs35l41_hw_cfg *
 			goto err;
 		}
 	}
-	if (cs35l41->reset_gpio) {
-		/* satisfy minimum reset pulse width spec */
-		usleep_range(2000, 2100);
-		gpiod_set_value_cansleep(cs35l41->reset_gpio, 1);
-	}
 
-	usleep_range(2000, 2100);
-
-	ret = regmap_read_poll_timeout(cs35l41->regmap, CS35L41_IRQ1_STATUS4,
-				       int_status, int_status & CS35L41_OTP_BOOT_DONE,
-				       1000, 100000);
-	if (ret) {
-		dev_err_probe(cs35l41->dev, ret,
-			      "Failed waiting for OTP_BOOT_DONE\n");
+	ret = cs35l41_boot(cs35l41);
+	if (ret)
 		goto err;
-	}
-
-	regmap_read(cs35l41->regmap, CS35L41_IRQ1_STATUS3, &int_status);
-	if (int_status & CS35L41_OTP_BOOT_ERR) {
-		dev_err(cs35l41->dev, "OTP Boot error\n");
-		ret = -EINVAL;
-		goto err;
-	}
 
 	ret = regmap_read(cs35l41->regmap, CS35L41_DEVID, &regid);
 	if (ret < 0) {
@@ -1450,7 +1463,20 @@ static int cs35l41_sys_suspend(struct device *dev)
 {
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
 
-	dev_dbg(cs35l41->dev, "System suspend, disabling IRQ\n");
+	dev_dbg(cs35l41->dev, "System suspend, saving state\n");
+	disable_irq(cs35l41->irq);
+
+	regcache_cache_only(cs35l41->regmap, true);
+	regcache_mark_dirty(cs35l41->regmap);
+
+	return 0;
+}
+
+static int cs35l41_sys_poweroff(struct device *dev)
+{
+	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
+
+	dev_dbg(cs35l41->dev, "System poweroff, disabling IRQ\n");
 	disable_irq(cs35l41->irq);
 
 	return 0;
@@ -1476,12 +1502,57 @@ static int cs35l41_sys_resume_noirq(struct device *dev)
 	return 0;
 }
 
-static int cs35l41_sys_resume(struct device *dev)
+static int cs35l41_sys_thaw(struct device *dev)
 {
 	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
 
-	dev_dbg(cs35l41->dev, "System resume, reenabling IRQ\n");
+	dev_dbg(cs35l41->dev, "System thaw, reenabling IRQ\n");
 	enable_irq(cs35l41->irq);
+
+	return 0;
+}
+
+static int cs35l41_sys_resume(struct device *dev)
+{
+	struct cs35l41_private *cs35l41 = dev_get_drvdata(dev);
+	int ret;
+
+	dev_dbg(cs35l41->dev, "System resume, restoring state\n");
+
+	regcache_cache_only(cs35l41->regmap, false);
+
+	ret = cs35l41_boot(cs35l41);
+	if (ret)
+		return ret;
+
+	cs35l41_test_key_unlock(cs35l41->dev, cs35l41->regmap);
+	ret = regcache_sync(cs35l41->regmap);
+	cs35l41_test_key_lock(cs35l41->dev, cs35l41->regmap);
+	if (ret) {
+		dev_err(cs35l41->dev, "Failed to restore register cache: %d\n", ret);
+		return ret;
+	}
+
+	ret = cs35l41_init_boost(cs35l41->dev, cs35l41->regmap,
+				 &cs35l41->hw_cfg);
+	if (ret)
+		return ret;
+
+	enable_irq(cs35l41->irq);
+
+	if (!cs35l41->dsp.cs_dsp.running)
+		return 0;
+
+	/*
+	 * DSP firmware is gone after a full power cycle. Reset the DSP
+	 * software state so that firmware is reloaded on next DSP preload event
+	 */
+	wm_adsp_stop(&cs35l41->dsp);
+
+	if (!cs35l41->dsp.cs_dsp.booted)
+		return 0;
+
+	wm_adsp_power_down(&cs35l41->dsp);
 
 	return 0;
 }
@@ -1489,7 +1560,13 @@ static int cs35l41_sys_resume(struct device *dev)
 EXPORT_GPL_DEV_PM_OPS(cs35l41_pm_ops) = {
 	RUNTIME_PM_OPS(cs35l41_runtime_suspend, cs35l41_runtime_resume, NULL)
 
-	SYSTEM_SLEEP_PM_OPS(cs35l41_sys_suspend, cs35l41_sys_resume)
+	.suspend  = pm_sleep_ptr(cs35l41_sys_suspend),
+	.resume   = pm_sleep_ptr(cs35l41_sys_resume),
+	.freeze   = pm_sleep_ptr(cs35l41_sys_suspend),
+	.thaw     = pm_sleep_ptr(cs35l41_sys_thaw),
+	.poweroff = pm_sleep_ptr(cs35l41_sys_poweroff),
+	.restore  = pm_sleep_ptr(cs35l41_sys_resume),
+
 	NOIRQ_SYSTEM_SLEEP_PM_OPS(cs35l41_sys_suspend_noirq, cs35l41_sys_resume_noirq)
 };
 
