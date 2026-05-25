@@ -2,7 +2,7 @@
 /*
  * Apple SMC hwmon driver for Apple Silicon platforms
  *
- * The System Management Controller on Apple Silicon devices is responsible for
+ * The System Management Controller on Apple Silicon And Intel Macs is responsible for
  * measuring data from sensors across the SoC and machine. These include power,
  * temperature, voltage and current sensors. Some "sensors" actually expose
  * derived values. An example of this is the key PHPC, which is an estimate
@@ -18,6 +18,8 @@
  * Originally based on a concept by Jean-Francois Bortolotti <jeff@borto.fr>
  *
  * Copyright The Asahi Linux Contributors
+ *
+ * Copyright (C) 2026 Atharva Tiwari <atharvatiwarilinuxdev@gmail.com>
  */
 
 #include <linux/bitfield.h>
@@ -71,7 +73,8 @@ struct macsmc_hwmon_sensors {
 struct macsmc_hwmon_fans {
 	struct hwmon_channel_info channel_info;
 	struct macsmc_hwmon_fan *fans;
-	u32 count;
+	u8 count;
+	bool has_old_manual;
 };
 
 struct macsmc_hwmon {
@@ -221,6 +224,116 @@ static int macsmc_hwmon_read_key(struct apple_smc *smc,
 			*val = (long)ioft;
 		break;
 	}
+	/* unsigned 8-bit integer */
+	case __SMC_KEY('u', 'i', '8', ' '): {
+		u8 ui8 = 0;
+
+		ret = apple_smc_read_u8(smc, sensor->macsmc_key, &ui8);
+		if (ret)
+			return ret;
+
+		*val = ui8;
+		break;
+	}
+	/* signed 8-bit integer */
+	case __SMC_KEY('s', 'i', '8', ' '): {
+		s8 si8 = 0;
+
+		ret = apple_smc_read_s8(smc, sensor->macsmc_key, &si8);
+		if (ret)
+			return ret;
+
+		*val = si8;
+		break;
+	}
+	/* unsigned 16-bit integer */
+	case __SMC_KEY('u', 'i', '1', '6'): {
+		u16 ui16 = 0;
+
+		ret = apple_smc_read_u16(smc, sensor->macsmc_key, &ui16);
+		if (ret)
+			return ret;
+
+		*val = ui16;
+		break;
+	}
+	/* signed 16-bit integer */
+	case __SMC_KEY('s', 'i', '1', '6'): {
+		s16 si16 = 0;
+
+		ret = apple_smc_read_s16(smc, sensor->macsmc_key, &si16);
+		if (ret)
+			return ret;
+
+		*val = si16;
+		break;
+	}
+	/* unsigned 32-bit integer */
+	case __SMC_KEY('u', 'i', '3', '2'): {
+		u32 ui32 = 0;
+
+		ret = apple_smc_read_u32(smc, sensor->macsmc_key, &ui32);
+		if (ret)
+			return ret;
+
+		*val = ui32;
+		break;
+	}
+	/* signed 32-bit integer */
+	case __SMC_KEY('s', 'i', '3', '2'): {
+		s32 si32;
+
+		ret = apple_smc_read_s32(smc, sensor->macsmc_key, &si32);
+		if (ret)
+			return ret;
+
+		*val = si32;
+		break;
+	}
+	/* 14.2 fixed point decimal */
+	case __SMC_KEY('f', 'p', 'e', '2'): {
+		u16 fpe2;
+
+		ret = apple_smc_read_u16(smc, sensor->macsmc_key, &fpe2);
+		if (ret)
+			return ret;
+
+		*val = (be16_to_cpu(fpe2) >> 2);
+		break;
+	}
+	/* 7.8 signed fixed point decimal */
+	case __SMC_KEY('s', 'p', '7', '8'): {
+		s16 sp78;
+
+		ret = apple_smc_read_s16(smc, sensor->macsmc_key, &sp78);
+		if (ret)
+			return ret;
+
+		*val = mult_frac((s16)cpu_to_be16(sp78), scale, BIT(8));
+		break;
+	}
+	/* 8.7 signed fixed point decimal */
+	case __SMC_KEY('s', 'p', '8', '7'): {
+		s16 sp78;
+
+		ret = apple_smc_read_s16(smc, sensor->macsmc_key, &sp78);
+		if (ret)
+			return ret;
+
+		*val = mult_frac((s16)cpu_to_be16(sp78), scale, BIT(7));
+		break;
+	}
+	/* 10.5 signed fixed point decimal */
+	case __SMC_KEY('s', 'p', 'a', '5'): {
+		s16 spa5;
+
+		ret = apple_smc_read_s16(smc, sensor->macsmc_key, &spa5);
+		if (ret)
+			return ret;
+
+		*val = mult_frac((s16)cpu_to_be16(spa5), scale, BIT(5));
+		break;
+	}
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -263,6 +376,9 @@ static int macsmc_hwmon_write_key(struct apple_smc *smc,
 	/* unsigned 8-bit integer */
 	case __SMC_KEY('u', 'i', '8', ' '):
 		return apple_smc_write_u8(smc, sensor->macsmc_key, val);
+	/* 14.2 fixed point decimal */
+	case __SMC_KEY('f', 'p', 'e', '2'):
+		return apple_smc_write_u16(smc, sensor->macsmc_key, cpu_to_be16(val << 2));
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -287,6 +403,23 @@ static int macsmc_hwmon_read_fan(struct macsmc_hwmon *hwmon, u32 attr, int chan,
 	default:
 		return -EOPNOTSUPP;
 	}
+}
+
+static int macsmc_hwmon_write_old_fan_manual(struct macsmc_hwmon *hwmon, u8 val, int channel)
+{
+	int ret;
+	u16 buf;
+
+	ret = apple_smc_read_u16(hwmon->smc, __SMC_KEY('F', 'S', '!', ' '), &buf);
+	if (ret)
+		return ret;
+
+	if (val)
+		buf |= BIT(channel);
+	else
+		buf &= ~BIT(channel);
+
+	return apple_smc_write_u16(hwmon->smc, __SMC_KEY('F', 'S', '!', ' '), cpu_to_be16(buf));
 }
 
 static int macsmc_hwmon_write_fan(struct device *dev, u32 attr, int channel,
@@ -315,7 +448,10 @@ static int macsmc_hwmon_write_fan(struct device *dev, u32 attr, int channel,
 	if (val >= min && val <= max) {
 		if (!hwmon->fan.fans[channel].manual) {
 			/* Write 1 to mode key for manual control */
-			ret = macsmc_hwmon_write_key(hwmon->smc,
+			if (hwmon->fan.has_old_manual)
+				ret = macsmc_hwmon_write_old_fan_manual(hwmon, 1, channel);
+			else
+				ret = macsmc_hwmon_write_key(hwmon->smc,
 						     &hwmon->fan.fans[channel].mode, 1);
 			if (ret < 0)
 				return ret;
@@ -326,7 +462,10 @@ static int macsmc_hwmon_write_fan(struct device *dev, u32 attr, int channel,
 					      &hwmon->fan.fans[channel].set, val);
 	} else if (!val) {
 		if (hwmon->fan.fans[channel].manual) {
-			ret = macsmc_hwmon_write_key(hwmon->smc,
+			if (hwmon->fan.has_old_manual)
+				ret = macsmc_hwmon_write_old_fan_manual(hwmon, 0, channel);
+			else
+				ret = macsmc_hwmon_write_key(hwmon->smc,
 						     &hwmon->fan.fans[channel].mode, 0);
 			if (ret < 0)
 				return ret;
@@ -490,6 +629,20 @@ static int macsmc_hwmon_create_sensor(struct device *dev, struct apple_smc *smc,
 	return 0;
 }
 
+static int macsmc_hwmon_create_sensor_acpi(struct device *dev, struct apple_smc *smc,
+					   struct macsmc_hwmon_sensor *sensor, smc_key key)
+{
+	int ret;
+
+	ret = apple_smc_get_key_info(smc, key, &sensor->info);
+	if (ret)
+		return ret;
+
+	sensor->macsmc_key = key;
+	snprintf(sensor->label, sizeof(sensor->label), "%c%c%c%c",
+			key >> 24, key >> 16, key >> 8, key);
+	return 0;
+}
 /*
  * Fan data is exposed by the SMC as multiple sensors.
  *
@@ -556,6 +709,59 @@ static int macsmc_hwmon_create_fan(struct device *dev, struct apple_smc *smc,
 	}
 
 	/* Initialise fan control mode to automatic */
+	fan->manual = false;
+
+	return 0;
+}
+
+static int macsmc_hwmon_create_fan_acpi(struct device *dev, struct apple_smc *smc,
+					 struct macsmc_hwmon_fan *fan, int num)
+{
+	const char num_char = num + '0';
+	int ret;
+
+	ret = macsmc_hwmon_create_sensor_acpi(dev, smc, &fan->now,
+			__SMC_KEY('F', num_char, 'A', 'c'));
+	if (ret)
+		return ret;
+
+	if (apple_smc_key_exists(smc, __SMC_KEY('F', num_char, 'I', 'D'))) {
+		char buf[17];
+
+		ret = apple_smc_read(smc, __SMC_KEY('F', num_char, 'I', 'D'), buf, 16);
+		if (ret)
+			return ret;
+
+		buf[16] = '\0';
+		snprintf(fan->label, sizeof(fan->label), "%s", buf + 4);
+	} else {
+		dev_dbg(dev, "No Label found, using fallback\n");
+		snprintf(fan->label, sizeof(fan->label), "Fan %d", num);
+	}
+
+	ret = macsmc_hwmon_create_sensor_acpi(dev, smc, &fan->min,
+			__SMC_KEY('F', num_char, 'M', 'n'));
+	if (ret)
+		return ret;
+
+	ret = macsmc_hwmon_create_sensor_acpi(dev, smc, &fan->max,
+			__SMC_KEY('F', num_char, 'M', 'x'));
+	if (ret)
+		return ret;
+
+	ret = macsmc_hwmon_create_sensor_acpi(dev, smc, &fan->set,
+			__SMC_KEY('F', num_char, 'T', 'g'));
+	if (ret)
+		return ret;
+
+	if (apple_smc_key_exists(smc, __SMC_KEY('F', num_char, 'M', 'd'))) {
+		ret = macsmc_hwmon_create_sensor_acpi(dev, smc, &fan->mode,
+				__SMC_KEY('F', num_char, 'M', 'd'));
+		if (ret)
+			return ret;
+	}
+
+	fan->attrs = HWMON_F_INPUT | HWMON_F_LABEL | HWMON_F_MIN | HWMON_F_MAX | HWMON_F_TARGET;
 	fan->manual = false;
 
 	return 0;
@@ -680,6 +886,137 @@ static int macsmc_hwmon_populate_sensors(struct macsmc_hwmon *hwmon,
 	return 0;
 }
 
+static int macsmc_hwmon_populate_sensors_acpi(struct macsmc_hwmon *hwmon)
+{
+	int ret, i;
+	smc_key key;
+
+	ret = apple_smc_read_u8(hwmon->smc, SMC_KEY(FNum), &hwmon->fan.count);
+	if (hwmon->fan.count && !ret) {
+		hwmon->fan.fans = devm_kcalloc(hwmon->dev, hwmon->fan.count,
+				sizeof(struct macsmc_hwmon_fan), GFP_KERNEL);
+		if (!hwmon->fan.fans)
+			return -ENOMEM;
+
+		hwmon->fan.has_old_manual = apple_smc_key_exists(hwmon->smc,
+				__SMC_KEY('F', 'S', '!', ' '));
+
+		for (i = 0; i < hwmon->fan.count; i++) {
+			macsmc_hwmon_create_fan_acpi(hwmon->dev,
+					hwmon->smc, &hwmon->fan.fans[i], i);
+			if (ret)
+				return ret;
+		}
+	}
+
+
+	for (i = 0; i < hwmon->smc->key_count; i++) {
+		ret = apple_smc_get_key_by_index(hwmon->smc, i, &key);
+		if (ret)
+			return ret;
+
+		if (((key >> 24) & 0xFF) == (u8)'P')
+			hwmon->power.count++;
+
+		if (((key >> 24) & 0xFF) == (u8)'T')
+			hwmon->temp.count++;
+
+		if (((key >> 24) & 0xFF) == (u8)'I')
+			hwmon->curr.count++;
+
+		if (((key >> 24) & 0xFF) == (u8)'V')
+			hwmon->volt.count++;
+	}
+
+	if (hwmon->power.count) {
+		hwmon->power.sensors = devm_kcalloc(hwmon->dev, hwmon->power.count,
+				sizeof(struct macsmc_hwmon_sensor), GFP_KERNEL);
+		if (!hwmon->power.sensors)
+			return -ENOMEM;
+
+		hwmon->power.count = 0;
+	}
+
+	if (hwmon->temp.count) {
+		hwmon->temp.sensors = devm_kcalloc(hwmon->dev, hwmon->temp.count,
+				sizeof(struct macsmc_hwmon_sensor), GFP_KERNEL);
+		if (!hwmon->temp.sensors)
+			return -ENOMEM;
+
+		hwmon->temp.count = 0;
+	}
+
+	if (hwmon->curr.count) {
+		hwmon->curr.sensors = devm_kcalloc(hwmon->dev, hwmon->curr.count,
+				sizeof(struct macsmc_hwmon_sensor), GFP_KERNEL);
+		if (!hwmon->curr.sensors)
+			return -ENOMEM;
+
+		hwmon->curr.count = 0;
+	}
+
+	if (hwmon->volt.count) {
+		hwmon->volt.sensors = devm_kcalloc(hwmon->dev, hwmon->volt.count,
+				sizeof(struct macsmc_hwmon_sensor), GFP_KERNEL);
+		if (!hwmon->volt.sensors)
+			return -ENOMEM;
+
+		hwmon->volt.count = 0;
+	}
+
+	for (i = 0; i < hwmon->smc->key_count; i++) {
+		ret = apple_smc_get_key_by_index(hwmon->smc, i, &key);
+		if (ret)
+			return ret;
+
+		if (((key >> 24) & 0xFF) == (u8)'P' && hwmon->power.sensors) {
+			ret = macsmc_hwmon_create_sensor_acpi(hwmon->dev, hwmon->smc,
+					&hwmon->power.sensors[hwmon->power.count], key);
+			if (ret)
+				return ret;
+
+			hwmon->power.sensors[hwmon->power.count].attrs = HWMON_P_INPUT |
+				HWMON_P_LABEL;
+			hwmon->power.count++;
+		}
+
+		if (((key >> 24) & 0xFF) == (u8)'T' && hwmon->temp.sensors) {
+			ret = macsmc_hwmon_create_sensor_acpi(hwmon->dev, hwmon->smc,
+					&hwmon->temp.sensors[hwmon->temp.count], key);
+			if (ret)
+				return ret;
+
+			hwmon->temp.sensors[hwmon->temp.count].attrs = HWMON_T_INPUT |
+				HWMON_T_LABEL;
+			hwmon->temp.count++;
+		}
+
+		if (((key >> 24) & 0xFF) == (u8)'I' && hwmon->curr.sensors) {
+			ret = macsmc_hwmon_create_sensor_acpi(hwmon->dev, hwmon->smc,
+					&hwmon->curr.sensors[hwmon->curr.count], key);
+			if (ret)
+				return ret;
+
+			hwmon->curr.sensors[hwmon->curr.count].attrs = HWMON_C_INPUT |
+				HWMON_C_LABEL;
+			hwmon->curr.count++;
+		}
+
+		if (((key >> 24) & 0xFF) == (u8)'V' && hwmon->volt.sensors) {
+			ret = macsmc_hwmon_create_sensor_acpi(hwmon->dev, hwmon->smc,
+					&hwmon->volt.sensors[hwmon->volt.count], key);
+			if (ret)
+				return ret;
+
+			hwmon->volt.sensors[hwmon->volt.count].attrs = HWMON_I_INPUT |
+				HWMON_I_LABEL;
+			hwmon->volt.count++;
+		}
+
+	}
+
+	return 0;
+}
 /* Create NULL-terminated config arrays */
 static void macsmc_hwmon_populate_configs(u32 *configs, const struct macsmc_hwmon_sensors *sensors)
 {
@@ -780,9 +1117,9 @@ static int macsmc_hwmon_probe(struct platform_device *pdev)
 	/*
 	 * The MFD driver will try to probe us unconditionally. Some devices
 	 * with the SMC do not have hwmon capabilities. Only probe if we have
-	 * a hwmon node.
+	 * a hwmon node or the machine is a intel mac.
 	 */
-	if (!pdev->dev.of_node)
+	if (!pdev->dev.of_node && !smc->is_acpi)
 		return -ENODEV;
 
 	hwmon = devm_kzalloc(&pdev->dev, sizeof(*hwmon),
@@ -793,7 +1130,10 @@ static int macsmc_hwmon_probe(struct platform_device *pdev)
 	hwmon->dev = &pdev->dev;
 	hwmon->smc = smc;
 
-	ret = macsmc_hwmon_populate_sensors(hwmon, hwmon->dev->of_node);
+	if (hwmon->smc->is_acpi)
+		ret = macsmc_hwmon_populate_sensors_acpi(hwmon);
+	else
+		ret = macsmc_hwmon_populate_sensors(hwmon, hwmon->dev->of_node);
 	if (ret) {
 		dev_err(hwmon->dev, "Could not parse sensors\n");
 		return ret;
@@ -832,6 +1172,32 @@ static int macsmc_hwmon_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/* On Some T2 macs, the manual keys automatically resets on resume, so we need to rewrite it
+ * we can detect a T2 mac by using the has_old_manual bool.
+ */
+static int macsmc_hwmon_resume(struct platform_device *pdev) {
+	struct macsmc_hwmon *hwmon = dev_get_drvdata(&pdev->dev);
+
+	if (hwmon->smc->is_acpi && !hwmon->fan.has_old_manual) {
+		int idx;
+		int ret;
+
+		for (idx = 0; idx < hwmon->fan.count; idx++)
+			if (hwmon->fan.fans[idx].manual) {
+				ret = macsmc_hwmon_write_key(hwmon->smc,
+						&hwmon->fan.fans[idx].mode, 1);
+				if (ret < 0) {
+					dev_warn(&pdev->dev,
+						"Unable to reenable fan manual, disabling\n");
+					hwmon->fan.fans[idx].manual = false;
+				}
+			}
+
+	}
+
+	return 0;
+}
+
 static const struct of_device_id macsmc_hwmon_of_table[] = {
 	{ .compatible = "apple,smc-hwmon" },
 	{}
@@ -840,6 +1206,7 @@ MODULE_DEVICE_TABLE(of, macsmc_hwmon_of_table);
 
 static struct platform_driver macsmc_hwmon_driver = {
 	.probe = macsmc_hwmon_probe,
+	.resume = macsmc_hwmon_resume,
 	.driver = {
 		.name = "macsmc-hwmon",
 		.of_match_table = macsmc_hwmon_of_table,
@@ -850,3 +1217,4 @@ module_platform_driver(macsmc_hwmon_driver);
 MODULE_DESCRIPTION("Apple Silicon SMC hwmon driver");
 MODULE_AUTHOR("James Calligeros <jcalligeros99@gmail.com>");
 MODULE_LICENSE("Dual MIT/GPL");
+MODULE_ALIAS("platform:macsmc-hwmon");

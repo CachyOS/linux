@@ -33,6 +33,7 @@
 #include <linux/apple-gmux.h>
 #include <linux/console.h>
 #include <linux/debugfs.h>
+#include <linux/dmi.h>
 #include <linux/fb.h>
 #include <linux/fs.h>
 #include <linux/fbcon.h>
@@ -424,6 +425,34 @@ find_active_client(struct list_head *head)
 	return NULL;
 }
 
+ifndef T2_MAC
+#define T2_MAC(vendor, product) \
+		 .matches = { \
+			DMI_MATCH(DMI_BOARD_VENDOR, vendor), \
+			DMI_MATCH(DMI_PRODUCT_NAME, product), \
+		},
+#endif
+
+static const struct dmi_system_id t2_mac_tbl[] = {
+	{ T2_MAC("Apple Inc.", "MacBookPro15,1") },
+	{ T2_MAC("Apple Inc.", "MacBookPro15,2") },
+	{ T2_MAC("Apple Inc.", "MacBookPro15,3") },
+	{ T2_MAC("Apple Inc.", "MacBookPro15,4") },
+	{ T2_MAC("Apple Inc.", "MacBookPro16,1") },
+	{ T2_MAC("Apple Inc.", "MacBookPro16,2") },
+	{ T2_MAC("Apple Inc.", "MacBookPro16,3") },
+	{ T2_MAC("Apple Inc.", "MacBookPro16,4") },
+	{ T2_MAC("Apple Inc.", "MacBookAir8,1") },
+	{ T2_MAC("Apple Inc.", "MacBookAir8,2") },
+	{ T2_MAC("Apple Inc.", "MacBookAir9,1") },
+	{ T2_MAC("Apple Inc.", "Macmini8,1") },
+	{ T2_MAC("Apple Inc.", "MacPro7,1") },
+	{ T2_MAC("Apple Inc.", "iMac20,1") },
+	{ T2_MAC("Apple Inc.", "iMac20,2") },
+	{ T2_MAC("Apple Inc.", "iMacPro1,1") },
+	{ }
+};
+
 /**
  * vga_switcheroo_client_probe_defer() - whether to defer probing a given client
  * @pdev: client pci device
@@ -438,12 +467,8 @@ find_active_client(struct list_head *head)
 bool vga_switcheroo_client_probe_defer(struct pci_dev *pdev)
 {
 	if (pci_is_display(pdev)) {
-		/*
-		 * apple-gmux is needed on pre-retina MacBook Pro
-		 * to probe the panel if pdev is the inactive GPU.
-		 */
-		if (apple_gmux_present() && pdev != vga_default_device() &&
-		    !vgasr_priv.handler_flags)
+		if (apple_gmux_present() && !vgasr_priv.handler_flags &&
+		   (pdev != vga_default_device() || dmi_check_system(t2_mac_tbl)))
 			return true;
 	}
 
