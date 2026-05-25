@@ -425,7 +425,7 @@ find_active_client(struct list_head *head)
 	return NULL;
 }
 
-ifndef T2_MAC
+#ifndef T2_MAC
 #define T2_MAC(vendor, product) \
 		 .matches = { \
 			DMI_MATCH(DMI_BOARD_VENDOR, vendor), \
