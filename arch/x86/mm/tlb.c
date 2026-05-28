@@ -1394,7 +1394,7 @@ static void get_flush_tlb_info(struct flush_tlb_info *info,
 	info->stride_shift	= stride_shift;
 	info->freed_tables	= freed_tables;
 	info->new_tlb_gen	= new_tlb_gen;
-	info->initiating_cpu	= smp_processor_id();
+	info->initiating_cpu	= raw_smp_processor_id();
 	info->trim_cpumask	= 0;
 }
 
@@ -1461,6 +1461,8 @@ static void invlpgb_kernel_range_flush(struct flush_tlb_info *info)
 {
 	unsigned long addr, nr;
 
+	guard(preempt)();
+
 	for (addr = info->start; addr < info->end; addr += nr << PAGE_SHIFT) {
 		nr = (info->end - addr) >> PAGE_SHIFT;
 
@@ -1505,7 +1507,6 @@ void flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
 	struct flush_tlb_info info;
 
-	guard(preempt)();
 	get_flush_tlb_info(&info, NULL, start, end, PAGE_SHIFT, false,
 			   TLB_GENERATION_INVALID);
 
