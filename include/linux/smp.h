@@ -167,6 +167,11 @@ void smp_call_function_many(const struct cpumask *mask,
 int smp_call_function_any(const struct cpumask *mask,
 			  smp_call_func_t func, void *info, int wait);
 
+#ifdef CONFIG_PREEMPTION
+int smp_task_ipi_mask_alloc(struct task_struct *task);
+void smp_task_ipi_mask_free(struct task_struct *task);
+#endif
+
 void kick_all_cpus_sync(void);
 void wake_up_all_idle_cpus(void);
 bool cpus_peek_for_pending_ipi(const struct cpumask *mask);
@@ -308,6 +313,16 @@ int smpcfd_dying_cpu(unsigned int cpu);
 bool csd_lock_is_stuck(void);
 #else
 static inline bool csd_lock_is_stuck(void) { return false; }
+#endif
+
+#if !defined(CONFIG_SMP) || !defined(CONFIG_PREEMPTION)
+static inline int smp_task_ipi_mask_alloc(struct task_struct *task)
+{
+	return 0;
+}
+static inline void smp_task_ipi_mask_free(struct task_struct *task)
+{
+}
 #endif
 
 #endif /* __LINUX_SMP_H */
