@@ -859,15 +859,14 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 					unsigned int scf_flags,
 					smp_cond_func_t cond_func)
 {
-	int cpu, last_cpu, this_cpu = smp_processor_id();
+	int cpu, last_cpu, this_cpu;
 	struct call_function_data *cfd;
 	bool wait = scf_flags & SCF_WAIT;
 	struct cpumask *cpumask, *task_mask;
 	int nr_cpus = 0;
 	bool run_remote = false;
 
-	lockdep_assert_preemption_disabled();
-
+	this_cpu = get_cpu();
 	task_mask = smp_task_ipi_mask(current);
 	cfd = this_cpu_ptr(&cfd_data);
 	if (task_mask)
@@ -953,6 +952,17 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 		local_irq_restore(flags);
 	}
 
+	/*
+	 * Waiting for completion can take time especially with many CPUs.
+	 * On a PREEMPTIBLE kernel a per-task cpumask is used to track CPUs
+	 * with pending IPI request. This allows to enable preemption and
+	 * potentially wait while allowing task preemption. On a !PREEMPTIBLE
+	 * the cpumask is shared and the call must block until completion to
+	 * avoid modifications by a another caller on this CPU.
+	 */
+	if (task_mask)
+		put_cpu();
+
 	if (run_remote && wait) {
 		for_each_cpu(cpu, cpumask) {
 			call_single_data_t *csd;
@@ -961,6 +971,9 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 			csd_lock_wait(csd);
 		}
 	}
+
+	if (!task_mask)
+		put_cpu();
 }
 
 /**
@@ -972,8 +985,7 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
  *        on other CPUs.
  *
  * You must not call this function with disabled interrupts or from a
- * hardware interrupt handler or from a bottom half handler. Preemption
- * must be disabled when calling this function.
+ * hardware interrupt handler or from a bottom half handler.
  *
  * @func is not called on the local CPU even if @mask contains it.  Consider
  * using on_each_cpu_cond_mask() instead if this is not desirable.
