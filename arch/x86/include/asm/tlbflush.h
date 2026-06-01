@@ -211,6 +211,12 @@ extern u16 invlpgb_count_max;
 
 extern void initialize_tlbstate_and_flush(void);
 
+#if SMP_CACHE_BYTES > 64
+#define FLUSH_TLB_INFO_ALIGN 64
+#else
+#define FLUSH_TLB_INFO_ALIGN SMP_CACHE_BYTES
+#endif
+
 /*
  * TLB flushing:
  *
@@ -249,7 +255,7 @@ struct flush_tlb_info {
 	u8			stride_shift;
 	u8			freed_tables;
 	u8			trim_cpumask;
-};
+} __aligned(FLUSH_TLB_INFO_ALIGN);
 
 void flush_tlb_local(void);
 void flush_tlb_one_user(unsigned long addr);
