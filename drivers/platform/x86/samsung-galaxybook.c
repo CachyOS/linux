@@ -53,7 +53,7 @@ struct samsung_galaxybook {
 	void *i8042_filter_ptr;
 
 	struct work_struct block_recording_hotkey_work;
-	struct input_dev *camera_lens_cover_switch;
+	struct input_dev *input;
 
 	struct acpi_battery_hook battery_hook;
 
@@ -859,11 +859,26 @@ static int block_recording_acpi_set(struct samsung_galaxybook *galaxybook, const
 	if (err)
 		return err;
 
-	input_report_switch(galaxybook->camera_lens_cover_switch,
+	input_report_switch(galaxybook->input,
 			    SW_CAMERA_LENS_COVER, value ? 1 : 0);
-	input_sync(galaxybook->camera_lens_cover_switch);
+	input_sync(galaxybook->input);
 
 	return 0;
+}
+
+static int galaxybook_input_init(struct samsung_galaxybook *galaxybook)
+{
+	galaxybook->input = devm_input_allocate_device(&galaxybook->platform->dev);
+	if (!galaxybook->input)
+		return -ENOMEM;
+
+	galaxybook->input->name = "Samsung Galaxy Book Camera Lens Cover";
+	galaxybook->input->phys = DRIVER_NAME "/input0";
+	galaxybook->input->id.bustype = BUS_HOST;
+
+	input_set_capability(galaxybook->input, EV_SW, SW_CAMERA_LENS_COVER);
+
+	return input_register_device(galaxybook->input);
 }
 
 static int galaxybook_block_recording_init(struct samsung_galaxybook *galaxybook)
@@ -887,24 +902,8 @@ static int galaxybook_block_recording_init(struct samsung_galaxybook *galaxybook
 		return GB_NOT_SUPPORTED;
 	}
 
-	galaxybook->camera_lens_cover_switch =
-		devm_input_allocate_device(&galaxybook->platform->dev);
-	if (!galaxybook->camera_lens_cover_switch)
-		return -ENOMEM;
-
-	galaxybook->camera_lens_cover_switch->name = "Samsung Galaxy Book Camera Lens Cover";
-	galaxybook->camera_lens_cover_switch->phys = DRIVER_NAME "/input0";
-	galaxybook->camera_lens_cover_switch->id.bustype = BUS_HOST;
-
-	input_set_capability(galaxybook->camera_lens_cover_switch, EV_SW, SW_CAMERA_LENS_COVER);
-
-	err = input_register_device(galaxybook->camera_lens_cover_switch);
-	if (err)
-		return err;
-
-	input_report_switch(galaxybook->camera_lens_cover_switch,
-			    SW_CAMERA_LENS_COVER, value ? 1 : 0);
-	input_sync(galaxybook->camera_lens_cover_switch);
+	input_report_switch(galaxybook->input, SW_CAMERA_LENS_COVER, value ? 1 : 0);
+	input_sync(galaxybook->input);
 
 	return 0;
 }
@@ -1391,6 +1390,11 @@ static int galaxybook_probe(struct platform_device *pdev)
 	else if (err != GB_NOT_SUPPORTED)
 		return dev_err_probe(&galaxybook->platform->dev, err,
 				     "failed to initialize kbd_backlight\n");
+
+	err = galaxybook_input_init(galaxybook);
+	if (err)
+		return dev_err_probe(&galaxybook->platform->dev, err,
+				     "failed to initialize input device\n");
 
 	err = galaxybook_fw_attrs_init(galaxybook);
 	if (err)

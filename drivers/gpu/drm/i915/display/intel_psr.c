@@ -701,8 +701,14 @@ static void _psr_init_dpcd(struct intel_dp *intel_dp, struct intel_connector *co
 		 * To support PSR version 02h and PSR version 03h without
 		 * Y-coordinate requirement panels we would need to enable
 		 * GTC first.
+		 *
+		 * Early Transport (version 04h) implies Y-coordinate
+		 * support. Accept it without explicit Y-coordinate
+		 * requirement bit.
 		 */
-		connector->dp.psr_caps.su_support = y_req &&
+		connector->dp.psr_caps.su_support =
+			(y_req || connector->dp.psr_caps.dpcd[0] ==
+			 DP_PSR2_WITH_Y_COORD_ET_SUPPORTED) &&
 			intel_alpm_aux_wake_supported(intel_dp);
 		drm_dbg_kms(display->drm, "PSR2 %ssupported\n",
 			    connector->dp.psr_caps.su_support ? "" : "not ");
@@ -1194,6 +1200,8 @@ static void tgl_psr2_disable_dc3co(struct intel_dp *intel_dp)
 	psr2_program_idle_frames(intel_dp, psr_compute_idle_frames(intel_dp));
 }
 
+static void intel_psr_activate(struct intel_dp *intel_dp);
+
 static void tgl_dc3co_disable_work(struct work_struct *work)
 {
 	struct intel_dp *intel_dp =
@@ -1203,6 +1211,13 @@ static void tgl_dc3co_disable_work(struct work_struct *work)
 	/* If delayed work is pending, it is not idle */
 	if (delayed_work_pending(&intel_dp->psr.dc3co_work))
 		goto unlock;
+
+	/* Panel Replay ALPM cursor-lag workaround re-activation path. */
+	if (intel_dp->psr.panel_replay_enabled &&
+	    intel_dp->psr.enabled && !intel_dp->psr.active) {
+		intel_psr_activate(intel_dp);
+		goto unlock;
+	}
 
 	tgl_psr2_disable_dc3co(intel_dp);
 unlock:
@@ -2130,6 +2145,9 @@ static void intel_psr_enable_source(struct intel_dp *intel_dp,
 		intel_dmc_block_pkgc(display, intel_dp->psr.pipe, true);
 
 	intel_alpm_configure(intel_dp, crtc_state);
+
+	if (intel_psr_use_trans_push(crtc_state))
+		intel_vrr_psr_frame_change_enable(crtc_state);
 }
 
 static bool psr_interrupt_error_check(struct intel_dp *intel_dp)
@@ -2522,9 +2540,11 @@ void intel_psr_trigger_frame_change_event(struct intel_dsb *dsb,
 		intel_pre_commit_crtc_state(state, crtc);
 	struct intel_display *display = to_intel_display(crtc);
 
-	if (crtc_state->has_psr)
-		intel_de_write_dsb(display, dsb,
-				   CURSURFLIVE(display, crtc->pipe), 0);
+	if (!crtc_state->has_psr || intel_psr_use_trans_push(crtc_state))
+		return;
+
+	intel_de_write_dsb(display, dsb,
+			   CURSURFLIVE(display, crtc->pipe), 0);
 }
 
 /**
@@ -4613,4 +4633,38 @@ int intel_psr_min_guardband(struct intel_crtc_state *crtc_state)
 		psr_min_guardband++;
 
 	return psr_min_guardband;
+}
+
+bool intel_psr_use_trans_push(const struct intel_crtc_state *crtc_state)
+{
+	struct intel_display *display = to_intel_display(crtc_state);
+
+	return HAS_PSR_TRANS_PUSH_FRAME_CHANGE(display) && crtc_state->has_panel_replay;
+}
+
+/*
+ * intel_psr_panel_replay_exit - exit Panel Replay during frontbuffer activity
+ *
+ * Exits PR on frontbuffer flush and arms dc3co_work with a 50 ms
+ * delay. Each subsequent flush cancels and rearms the timer. When it
+ * finally fires, tgl_dc3co_disable_work re-activates PR.
+ */
+void intel_psr_panel_replay_exit(struct intel_display *display)
+{
+	struct intel_encoder *encoder;
+
+	for_each_intel_encoder_with_psr(display->drm, encoder) {
+		struct intel_dp *intel_dp = enc_to_intel_dp(encoder);
+
+		mutex_lock(&intel_dp->psr.lock);
+		if (intel_dp->psr.panel_replay_enabled &&
+		    intel_dp->psr.sel_update_enabled) {
+			if (intel_dp->psr.active)
+				intel_psr_exit(intel_dp);
+			mod_delayed_work(display->wq.unordered,
+					 &intel_dp->psr.dc3co_work,
+					 msecs_to_jiffies(50));
+		}
+		mutex_unlock(&intel_dp->psr.lock);
+	}
 }

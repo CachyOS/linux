@@ -40,6 +40,7 @@ int intel_psr_debug_set(struct intel_dp *intel_dp, u64 value);
 void intel_psr_invalidate(struct intel_display *display,
 			  unsigned frontbuffer_bits,
 			  enum fb_op_origin origin);
+void intel_psr_panel_replay_exit(struct intel_display *display);
 void intel_psr_flush(struct intel_display *display,
 		     unsigned frontbuffer_bits,
 		     enum fb_op_origin origin);
@@ -85,5 +86,6 @@ bool intel_psr_needs_alpm_aux_less(struct intel_dp *intel_dp,
 void intel_psr_compute_config_late(struct intel_dp *intel_dp,
 				   struct intel_crtc_state *crtc_state);
 int intel_psr_min_guardband(struct intel_crtc_state *crtc_state);
+bool intel_psr_use_trans_push(const struct intel_crtc_state *crtc_state);
 
 #endif /* __INTEL_PSR_H__ */
