@@ -1733,6 +1733,232 @@ sd_init(struct sched_domain_topology_level *tl,
 		sd->shared = *per_cpu_ptr(sdd->sds, sd_id);
 		atomic_inc(&sd->shared->ref);
 		atomic_set(&sd->shared->nr_busy_cpus, sd_weight);
+
+#ifdef CONFIG_SCHED_POC_SELECTOR
+		int range = cpumask_last(sd_span) - sd_id + 1;
+
+		sd->shared->poc_cpu_base = sd_id;
+		sd->shared->poc_affinity_shift = sd_id & 63;
+
+		if (range <= 64) {
+			sd->shared->poc_fast_eligible = true;
+			/*
+			 * Disable aligned optimization if this LLC's base CPU
+			 * is not 64-aligned (e.g., Threadripper CCDs).
+			 */
+			if (sd_id & 63)
+				static_branch_disable_cpuslocked(&sched_poc_aligned);
+			/*
+			 * Disable packed priority search if this LLC
+			 * has more than 32 CPUs.
+			 */
+			if (range > 32)
+				static_branch_disable_cpuslocked(&sched_poc_packed);
+		} else {
+			sd->shared->poc_fast_eligible = false;
+			static_branch_disable_cpuslocked(&sched_poc_packed);
+		}
+		memset(sd->shared->poc_idle_cpus, 0,
+		       sizeof(sd->shared->poc_idle_cpus));
+		atomic64_set(&sd->shared->poc_idle_cpus_mask, 0);
+#ifdef CONFIG_SCHED_SMT
+		memset(sd->shared->poc_idle_cores, 0,
+		       sizeof(sd->shared->poc_idle_cores));
+		atomic64_set(&sd->shared->poc_idle_cores_mask, 0);
+#endif
+
+		/* Build LLC member bitmask for reader-side aggregation */
+		{
+			u64 members = 0;
+			int cpu_iter;
+
+			for_each_cpu(cpu_iter, sd_span) {
+				int bit = cpu_iter - sd_id;
+
+				if ((unsigned int)bit < 64)
+					members |= 1ULL << bit;
+			}
+			sd->shared->poc_llc_members = members;
+
+		}
+
+#ifdef CONFIG_SCHED_SMT
+		/*
+		 * Pre-compute SMT sibling masks for Level 4.
+		 * Each entry contains a bitmask of SMT siblings (including self)
+		 * for O(1) lookup via CTZ during wakeup.
+		 */
+		memset(sd->shared->poc_smt_mask, 0,
+		       sizeof(sd->shared->poc_smt_mask));
+		if (sd->shared->poc_fast_eligible) {
+			int cpu_iter;
+
+			for_each_cpu(cpu_iter, sd_span) {
+				int bit = cpu_iter - sd_id;
+				int sibling;
+				u64 mask = 0;
+
+				for_each_cpu(sibling, cpu_smt_mask(cpu_iter)) {
+					int sib_bit;
+
+					sib_bit = sibling - sd_id;
+					if (sib_bit >= 0 && sib_bit < 64)
+						mask |= 1ULL << sib_bit;
+				}
+				if (bit >= 0 && bit < 64)
+					sd->shared->poc_smt_mask[bit] = mask;
+			}
+		}
+
+		/*
+		 * Detect SMT topology and classify for poc_idle_core_mask():
+		 *
+		 *   Tier 1 (consecutive): uniform 2-way SMT, siblings at
+		 *     consecutive bit positions (e.g., 0,1 / 2,3).
+		 *     Uses compile-time constants: shift=1, mask=0x5555...
+		 *
+		 *   Tier 2 (uniform stride-N): uniform 2-way SMT with
+		 *     constant stride between siblings (e.g., Intel Xeon
+		 *     stride-8: CPU 0,8 / 1,9 / ...).  Uses precomputed
+		 *     poc_smt_shift and poc_primary_mask for read-time
+		 *     derivation without write-path overhead.
+		 *
+		 *   Tier 3 (exotic): >2-way SMT, non-uniform topology,
+		 *     or mixed SMT ways.  Falls back to write-time
+		 *     maintenance of poc_idle_cores_mask atomic64_t.
+		 *
+		 * On pure non-SMT systems, the key values are irrelevant
+		 * because sched_smt_active() gates all SMT paths.
+		 */
+		sd->shared->poc_smt_shift = 1;
+		sd->shared->poc_primary_mask = 0;
+
+		if (sd->shared->poc_fast_eligible) {
+			int cpu_iter;
+			bool all_2way = true;
+			bool all_consecutive = true;
+			int uniform_stride = -1;
+			u64 primary_mask = 0;
+
+			for_each_cpu(cpu_iter, sd_span) {
+				int bit = cpu_iter - sd_id;
+
+				if (bit < 0 || bit >= 64)
+					continue;
+				u64 mask = sd->shared->poc_smt_mask[bit];
+				int ways = hweight64(mask);
+
+				if (ways != 2) {
+					all_2way = false;
+					all_consecutive = false;
+					break;
+				}
+
+				int lo = __ffs(mask);
+				int hi = __fls(mask);
+				int stride = hi - lo;
+
+				/* Track primary (lowest-numbered sibling) */
+				primary_mask |= 1ULL << lo;
+
+				/* Check consecutive: 0b11 at even position */
+				if ((lo & 1) || mask != (3ULL << lo))
+					all_consecutive = false;
+
+				/* Check uniform stride */
+				if (uniform_stride < 0)
+					uniform_stride = stride;
+				else if (stride != uniform_stride)
+					all_2way = false;
+			}
+
+			if (!all_consecutive)
+				static_branch_disable_cpuslocked(
+					&sched_poc_smt_consecutive);
+
+			if (all_2way && uniform_stride > 0) {
+				sd->shared->poc_smt_shift =
+					(u8)uniform_stride;
+				sd->shared->poc_primary_mask = primary_mask;
+			} else {
+				static_branch_disable_cpuslocked(
+					&sched_poc_smt_consecutive);
+				static_branch_disable_cpuslocked(
+					&sched_poc_smt_uniform);
+			}
+		}
+#endif /* CONFIG_SCHED_SMT */
+
+		memset(sd->shared->poc_cluster_mask, 0,
+		       sizeof(sd->shared->poc_cluster_mask));
+
+		sd->shared->poc_cluster_valid = false;
+
+#ifdef CONFIG_SCHED_CLUSTER
+		/*
+		 * Detect cluster (L2-sharing) topology for Level 2/5
+		 * cluster-local search in POC selector.
+		 *
+		 * Uses cpu_clustergroup_mask() which returns the L2
+		 * cache sharing mask on x86.  Validates that all
+		 * clusters are uniform (same size, power-of-2, and
+		 * naturally aligned in POC bit space).
+		 */
+		if (sd->shared->poc_fast_eligible) {
+			const struct cpumask *cls_mask =
+				cpu_clustergroup_mask(sd_id);
+			int cls_size = cpumask_weight(cls_mask);
+			int smt_size = cpumask_weight(cpu_smt_mask(sd_id));
+
+			if (cls_size > smt_size &&
+			    is_power_of_2(cls_size)) {
+				bool valid = true;
+				int cpu_iter;
+
+				for_each_cpu(cpu_iter, sd_span) {
+					const struct cpumask *m =
+						cpu_clustergroup_mask(cpu_iter);
+					int first = cpumask_first(m);
+					int rel = first - sd_id;
+
+					if (cpumask_weight(m) != cls_size ||
+					    (rel & (cls_size - 1)) != 0) {
+						valid = false;
+						break;
+					}
+				}
+				if (valid) {
+					sd->shared->poc_cluster_valid = true;
+
+					/*
+					 * Pre-compute cluster masks for O(1) lookup.
+					 * Each entry contains a bitmask of cluster
+					 * members (excluding self) for fast search.
+					 */
+					for_each_cpu(cpu_iter, sd_span) {
+						const struct cpumask *m =
+							cpu_clustergroup_mask(cpu_iter);
+						int bit = cpu_iter - sd_id;
+						int member;
+						u64 cmask = 0;
+
+						for_each_cpu(member, m) {
+							int mbit;
+
+							if (member == cpu_iter)
+								continue;
+							mbit = member - sd_id;
+							if (mbit >= 0 && mbit < 64)
+								cmask |= 1ULL << mbit;
+						}
+						if (bit >= 0 && bit < 64)
+							sd->shared->poc_cluster_mask[bit] = cmask;
+					}
+				}
+			}
+		}
+#endif /* CONFIG_SCHED_CLUSTER */
+#endif /* CONFIG_SCHED_POC_SELECTOR */
 	}
 
 	sd->private = sdd;
