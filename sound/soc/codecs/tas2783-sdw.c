@@ -1120,7 +1120,7 @@ static void tas_generate_fw_name(struct sdw_slave *slave, char *name, size_t siz
 	for (; dev; dev = dev->parent) {
 		if (dev->bus == &pci_bus_type) {
 			pci = to_pci_dev(dev);
-			scnprintf(name, size, "%04X-%1X-%1X.bin",
+			scnprintf(name, size, "%04X-%1X-0x%1X.bin",
 				  pci->subsystem_device, bus->link_id, unique_id);
 			pci_found = true;
 			break;
