@@ -4915,7 +4915,7 @@ static long calc_up_shares(struct cfs_rq *cfs_rq)
 	return READ_ONCE(tg->shares);
 }
 
-DEFINE_STATIC_CALL(calc_group_shares, calc_smp_shares);
+DEFINE_STATIC_CALL(calc_group_shares, calc_concur_shares);
 
 void __sched_cgroup_mode_update(int mode)
 {
@@ -4925,10 +4925,10 @@ void __sched_cgroup_mode_update(int mode)
 		func = &calc_up_shares;
 		break;
 	case 1:
-	default:
 		func = &calc_smp_shares;
 		break;
 	case 2:
+	default:
 		func = &calc_concur_shares;
 		break;
 	case 3:

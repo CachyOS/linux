@@ -634,7 +634,7 @@ static void debugfs_fair_server_init(void)
 }
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-static int cgroup_mode = 1;
+static int cgroup_mode = 2;
 
 /* See __sched_cgroup_mode_update(). */
 static const char *cgroup_mode_str[] = {
