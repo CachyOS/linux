@@ -642,6 +642,7 @@ static const char *cgroup_mode_str[] = {
 	"smp",
 	"concur",
 	"max",
+	"tasks",
 };
 
 static int sched_cgroup_mode(const char *str)

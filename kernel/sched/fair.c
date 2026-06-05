@@ -4852,6 +4852,19 @@ static inline int tg_tasks(struct task_group *tg)
 }
 
 /*
+ * Func: fraction(nr_tasks * tg->shares)
+ *
+ * Scale tg->shares by the number of tasks.
+ */
+static long calc_tasks_shares(struct cfs_rq *cfs_rq)
+{
+	struct task_group *tg = cfs_rq->tg;
+	int nr = tg_tasks(tg);
+	long tg_shares = READ_ONCE(tg->shares);
+	return __calc_smp_shares(cfs_rq, nr * tg_shares, nr * tg_shares);
+}
+
+/*
  * Func: min(fraction(nr_cpus * tg->shares), nice -20)
  *
  * Scale tg->shares by the maximal number of CPUs; but clip the max shares at
@@ -4920,6 +4933,9 @@ void __sched_cgroup_mode_update(int mode)
 		break;
 	case 3:
 		func = &calc_max_shares;
+		break;
+	case 4:
+		func = &calc_tasks_shares;
 		break;
 	}
 	static_call_update(calc_group_shares, func);
