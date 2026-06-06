@@ -9,7 +9,11 @@
 #include <linux/debugfs.h>
 #include <linux/nmi.h>
 #include <linux/log2.h>
+#include <linux/sched/clock.h>
+#include <linux/sched/debug.h>
+#include <linux/utsname.h>
 #include "sched.h"
+#include "autogroup.h"
 
 /*
  * This allows printing both to /sys/kernel/debug/sched/debug and
