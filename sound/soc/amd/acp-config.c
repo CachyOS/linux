@@ -50,6 +50,12 @@ static const struct dmi_system_id acp70_acpi_flag_override_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "83W5"),
 		},
 	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUSTeK COMPUTER INC"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "M1807EA"),
+		},
+	},
 	{}
 };
 
