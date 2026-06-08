@@ -6778,7 +6778,7 @@ static const struct hda_fixup alc269_fixups[] = {
 		.v.func = alc287_fixup_legion_16iax10h_aw88399,
 		.chained = true,
 		.chain_id = ALC287_FIXUP_AW88399_I2C_2,
-	}
+	},
 	[ALC285_FIXUP_ASUS_G733Z_VERBS] = {
 		.type = HDA_FIXUP_VERBS,
 		.v.verbs = (const struct hda_verb[]) {
