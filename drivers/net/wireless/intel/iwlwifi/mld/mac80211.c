@@ -519,6 +519,10 @@ iwl_mld_mac80211_tx(struct ieee80211_hw *hw,
 	u32 link_id = u32_get_bits(info->control.flags,
 				   IEEE80211_TX_CTRL_MLO_LINK);
 
+	if (unlikely(test_bit(STATUS_FW_ERROR, &mld->trans->status))) {
+		ieee80211_free_txskb(hw, skb);
+		return;
+	}
 	/* In AP mode, mgmt frames are sent on the bcast station,
 	 * so the FW can't translate the MLD addr to the link addr. Do it here
 	 */
