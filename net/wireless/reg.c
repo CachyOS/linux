@@ -231,7 +231,7 @@ static DECLARE_WORK(reg_work, reg_todo);
 
 /* We keep a static world regulatory domain in case of the absence of CRDA */
 static const struct ieee80211_regdomain world_regdom = {
-	.n_reg_rules = 8,
+	.n_reg_rules = 9,
 	.alpha2 =  "00",
 	.reg_rules = {
 		/* IEEE 802.11b/g, channels 1..11 */
@@ -262,6 +262,17 @@ static const struct ieee80211_regdomain world_regdom = {
 
 		/* IEEE 802.11a, channel 149..165 */
 		REG_RULE(5745-10, 5825+10, 80, 6, 20,
+			NL80211_RRF_NO_IR),
+
+		/* IEEE 802.11ax/WiFi 6E, 6 GHz (UNII-5 through UNII-8,
+		 * channels 1..233).  Allow passive scanning so that beacon
+		 * hints can unlock individual channels once an AP is observed
+		 * transmitting there.  This mirrors the treatment of 5 GHz
+		 * channels in this world domain and enables connection to
+		 * 6 GHz-only networks without requiring the user to first set
+		 * a country code.
+		 */
+		REG_RULE(5955-10, 7125+10, 320, 0, 23,
 			NL80211_RRF_NO_IR),
 
 		/* IEEE 802.11ad (60GHz), channels 1..3 */
