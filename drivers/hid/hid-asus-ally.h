@@ -26,6 +26,7 @@ enum xpad_cmd {
 	xpad_cmd_set_tr_dz = 0x05, /* deadzones */
 	xpad_cmd_set_vibe_intensity = 0x06,
 	xpad_cmd_set_leds = 0x08,
+	xpad_cmd_set_led_power = 0x09,
 	xpad_cmd_check_ready = 0x0A,
 	xpad_cmd_set_turbo = 0x0F,
 	xpad_cmd_set_response_curve = 0x13,
@@ -39,6 +40,7 @@ enum xpad_cmd_len {
 	xpad_cmd_len_deadzone = 0x04,
 	xpad_cmd_len_vibe_intensity = 0x02,
 	xpad_cmd_len_leds = 0x0C,
+	xpad_cmd_len_led_power = 0x01,
 	xpad_cmd_len_turbo = 0x20,
 	xpad_cmd_len_response_curve = 0x09,
 	xpad_cmd_len_adz = 0x02,
