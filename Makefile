@@ -1084,6 +1084,9 @@ ifdef CONFIG_LTO_CLANG_FULL
 CC_FLAGS_LTO	:= -flto
 else
 CC_FLAGS_LTO	:= -flto=thin -fsplit-lto-unit
+
+# These LLVM options were initially added with only in-process ThinLTO
+# support, so avoid distributed ThinLTO support for now.
 ifdef CONFIG_LTO_CLANG_THIN
 KBUILD_LDFLAGS += $(call ld-option,--lto-whole-program-visibility -mllvm -always-rename-promoted-locals=false)
 endif

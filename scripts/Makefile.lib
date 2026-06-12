@@ -252,7 +252,8 @@ endif
 ifdef CONFIG_LTO_CLANG_THIN_DIST
 # Save the _c_flags, sliently.
 quiet_cmd_save_c_flags =
-      cmd_save_c_flags = printf '\n%s\n' 'saved_c_flags_$@ := $(call escsq,$(_c_flags))' >> $(dot-target).cmd
+      saved_c_flags = $(_c_flags) $(modkern_cflags)
+      cmd_save_c_flags = printf '\n%s\n' 'saved_c_flags_$@ := $(call escsq,$(saved_c_flags))' >> $(dot-target).cmd
 endif
 
 quiet_cmd_cc_o_c = CC $(quiet_modtag)  $@

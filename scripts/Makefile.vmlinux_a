@@ -42,7 +42,7 @@ quiet_cmd_ar_vmlinux.a = GEN     $@
       cmd_ar_vmlinux.a =					\
 	rm -f $@;						\
 	while read -r obj; do					\
-		if grep -q $${obj} $(word 2, $^); then		\
+		if grep -Fqx $${obj} $(word 2, $^); then	\
 			echo $${obj%.o}.thinlto-native.o;	\
 		else						\
 			echo $${obj};				\
