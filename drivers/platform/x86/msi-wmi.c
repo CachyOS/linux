@@ -46,6 +46,12 @@ enum msi_scancodes {
 	WIND_KEY_WLAN		= 0x5f,	/* Fn+F11 Wi-Fi toggle */
 	WIND_KEY_TURBO,			/* Fn+F10 turbo mode toggle */
 	WIND_KEY_ECO		= 0x69,	/* Fn+F10 ECO mode toggle */
+	/* MSI Claw keys */
+	CLAW_KEY_VOLUMEDOWN	= 0x21,
+	CLAW_KEY_CENTER		= 0x29,	/* MSI M-Center main menu */
+	CLAW_KEY_QUICK_LONG	= 0x2a,	/* MSI M-Center quick access long hold */
+	CLAW_KEY_VOLUMEUP	= 0x32,
+	CLAW_KEY_QUICK_SHORT	= 0x58,	/* MSI M-Center quick access short press */
 };
 static struct key_entry msi_wmi_keymap[] = {
 	{ KE_KEY, MSI_KEY_BRIGHTNESSUP,		{KEY_BRIGHTNESSUP} },
@@ -68,6 +74,15 @@ static struct key_entry msi_wmi_keymap[] = {
 	/* These are MSI Wind keys that should be handled via WMI */
 	{ KE_KEY, WIND_KEY_TURBO,		{KEY_PROG1} },
 	{ KE_KEY, WIND_KEY_ECO,			{KEY_PROG2} },
+
+	/* These are MSI Claw keys, used for MSI M-Center in Windows */
+	{ KE_KEY, CLAW_KEY_CENTER,		{KEY_F15} },
+
+	/* These MSI Claw keys work without WMI. Ignore them to avoid double keycodes */
+	{ KE_IGNORE, CLAW_KEY_QUICK_SHORT },
+	{ KE_IGNORE, CLAW_KEY_QUICK_LONG },
+	{ KE_IGNORE, CLAW_KEY_VOLUMEUP },
+	{ KE_IGNORE, CLAW_KEY_VOLUMEDOWN },
 
 	{ KE_END, 0 }
 };
@@ -181,6 +196,17 @@ static void msi_wmi_notify(union acpi_object *obj, void *context)
 	switch (obj->type) {
 	case ACPI_TYPE_INTEGER:
 		eventcode = obj->integer.value;
+		pr_debug("Eventcode: 0x%x\n", eventcode);
+		break;
+	case ACPI_TYPE_BUFFER:
+		/* Field returns u8[2] here, but is u32 by spec. Allow "oversized" buffers. */
+		if (obj->buffer.length < 2)
+			return;
+
+		/* pointer[0] is key ID, pointer[1] is active state. We don't get release
+		 * events, so ignore the active state and treat as autorelease.
+		 */
+		eventcode = obj->buffer.pointer[0];
 		pr_debug("Eventcode: 0x%x\n", eventcode);
 		break;
 	default:
