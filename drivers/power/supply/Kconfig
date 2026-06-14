@@ -1156,7 +1156,7 @@ config FUEL_GAUGE_MM8013
 
 config MACSMC_POWER
 	tristate "Apple SMC Battery and Power Driver"
-	depends on MFD_MACSMC
+	depends on MFD_MACSMC_CORE
 	help
 	  This driver provides support for the battery and AC adapter on
 	  Apple Silicon machines. It exposes battery telemetry (voltage,

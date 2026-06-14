@@ -97,20 +97,10 @@ static int macsmc_gpio_find_first_gpio_index(struct macsmc_gpio *smcgp)
 {
 	struct apple_smc *smc = smcgp->smc;
 	smc_key key = macsmc_gpio_key(0);
-	smc_key first_key, last_key;
 	int start, count, ret;
 
 	/* Return early if the key is out of bounds */
-	ret = apple_smc_get_key_by_index(smc, 0, &first_key);
-	if (ret)
-		return ret;
-	if (key <= first_key)
-		return -ENODEV;
-
-	ret = apple_smc_get_key_by_index(smc, smc->key_count - 1, &last_key);
-	if (ret)
-		return ret;
-	if (key > last_key)
+	if (key <= smc->first_key || key > smc->last_key)
 		return -ENODEV;
 
 	/* Binary search to find index of first SMC key bigger or equal to key */

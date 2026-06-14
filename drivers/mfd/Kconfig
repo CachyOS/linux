@@ -325,23 +325,14 @@ config MFD_LOCHNAGAR
 	help
 	  Support for Cirrus Logic Lochnagar audio development board.
 
-config MFD_MACSMC
-	tristate "Apple Silicon System Management Controller (SMC)"
-	depends on ARCH_APPLE || COMPILE_TEST
-	depends on OF
-	depends on APPLE_RTKIT
+config MFD_MACSMC_CORE
+	tristate "Apple System Management Controller (SMC) Core"
 	select MFD_CORE
 	help
-	  The System Management Controller (SMC) on Apple Silicon machines is a
+	  The System Management Controller (SMC) on Apple Macs machines is a
 	  piece of hardware that exposes various functionalities such as
 	  temperature sensors, voltage/power meters, shutdown/reboot handling,
 	  GPIOs and more.
-
-	  Communication happens via a shared mailbox using the RTKit protocol
-	  which is also used for other co-processors. The SMC protocol then
-	  allows reading and writing many different keys which implement the
-	  various features. The MFD core device handles this protocol and
-	  exposes it to the sub-devices.
 
 config MFD_MADERA
 	tristate "Cirrus Logic Madera codecs"
