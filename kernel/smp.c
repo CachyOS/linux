@@ -1012,9 +1012,8 @@ EXPORT_SYMBOL(smp_call_function_many);
  */
 void smp_call_function(smp_call_func_t func, void *info, int wait)
 {
-	preempt_disable();
-	smp_call_function_many(cpu_online_mask, func, info, wait);
-	preempt_enable();
+	smp_call_function_many_cond(cpu_online_mask, func, info,
+			wait ? SCF_WAIT : 0, NULL);
 }
 EXPORT_SYMBOL(smp_call_function);
 
