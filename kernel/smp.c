@@ -1136,9 +1136,7 @@ void on_each_cpu_cond_mask(smp_cond_func_t cond_func, smp_call_func_t func,
 	if (wait)
 		scf_flags |= SCF_WAIT;
 
-	preempt_disable();
 	smp_call_function_many_cond(mask, func, info, scf_flags, cond_func);
-	preempt_enable();
 }
 EXPORT_SYMBOL(on_each_cpu_cond_mask);
 
