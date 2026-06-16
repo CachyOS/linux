@@ -64,7 +64,15 @@ int smpcfd_prepare_cpu(unsigned int cpu)
 		free_cpumask_var(cfd->cpumask);
 		return -ENOMEM;
 	}
-	cfd->csd = alloc_percpu(call_single_data_t);
+
+	/*
+	 * The percpu csd is allocated only once and never freed.
+	 * This ensures that smp_call_function_many_cond() can safely
+	 * access the csd of an offlined CPU if it gets preempted
+	 * during csd_lock_wait().
+	 */
+	if (!cfd->csd)
+		cfd->csd = alloc_percpu(call_single_data_t);
 	if (!cfd->csd) {
 		free_cpumask_var(cfd->cpumask);
 		free_cpumask_var(cfd->cpumask_ipi);
@@ -80,7 +88,6 @@ int smpcfd_dead_cpu(unsigned int cpu)
 
 	free_cpumask_var(cfd->cpumask);
 	free_cpumask_var(cfd->cpumask_ipi);
-	free_percpu(cfd->csd);
 	return 0;
 }
 
