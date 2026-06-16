@@ -1353,10 +1353,11 @@ int rtw89_recognize_regd_from_elm(struct rtw89_dev *rtwdev,
 {
 	const struct __rtw89_fw_regd_element *regd_elm = &elm->u.regd;
 	struct rtw89_fw_elm_info *elm_info = &rtwdev->fw.elm_info;
-	u32 num_ents = le32_to_cpu(regd_elm->num_ents);
 	struct rtw89_regd_data *p;
 	struct rtw89_regd regd;
-	u32 i = 0;
+	/* +1 because we reserve index 0 for WW */
+	u32 num_ents = le32_to_cpu(regd_elm->num_ents) + 1;
+	u32 i = 1;
 
 	if (num_ents > RTW89_REGD_MAX_COUNTRY_NUM) {
 		rtw89_warn(rtwdev,
@@ -1379,6 +1380,7 @@ int rtw89_recognize_regd_from_elm(struct rtw89_dev *rtwdev,
 		return -ENOMEM;
 
 	p->nr = num_ents;
+	p->map[0] = *rtw89_regd_static_ww_entry();
 	rtw89_for_each_in_regd_element(&regd, regd_elm)
 		p->map[i++] = regd;
 
