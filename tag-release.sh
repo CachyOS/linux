@@ -87,10 +87,17 @@ fi
 # ---------------------------------------------------------------------------
 
 # Hash of the "Linux X.Y.Z" commit reachable from <ref>.
+# Upstream tags the first release of a series as "Linux X.Y" (no ".0"),
+# so fall back to the stripped form when "Linux X.Y.0" isn't found.
 find_upstream_commit() {
-    local version="$1" ref="$2"
-    git log --format="%H %s" "$ref" 2>/dev/null \
-        | awk -v tgt="Linux $version" '$0 ~ "^[0-9a-f]+ "tgt"$" {print $1; exit}'
+    local version="$1" ref="$2" hash
+    hash=$(git log --format="%H %s" "$ref" 2>/dev/null \
+        | awk -v tgt="Linux $version" '$0 ~ "^[0-9a-f]+ "tgt"$" {print $1; exit}')
+    if [[ -z "$hash" && "$version" == *.0 ]]; then
+        hash=$(git log --format="%H %s" "$ref" 2>/dev/null \
+            | awk -v tgt="Linux ${version%.0}" '$0 ~ "^[0-9a-f]+ "tgt"$" {print $1; exit}')
+    fi
+    printf '%s' "$hash"
 }
 
 # Most recent cachyos-<major.minor>-* tag. Works across stable rebases
