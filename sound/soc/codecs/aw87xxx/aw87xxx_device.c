@@ -14,7 +14,6 @@
 
 #include <linux/i2c.h>
 #include <linux/gpio.h>
-#include <linux/of_gpio.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -973,5 +972,4 @@ int aw87xxx_dev_init(struct aw_device *aw_dev)
 
 	return ret;
 }
-
 

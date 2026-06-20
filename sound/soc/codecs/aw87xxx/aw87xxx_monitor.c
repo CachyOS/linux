@@ -23,7 +23,6 @@
 #include <linux/hrtimer.h>
 #include <linux/i2c.h>
 #include <linux/gpio.h>
-#include <linux/of_gpio.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/firmware.h>
@@ -1205,4 +1204,3 @@ void aw87xxx_monitor_exit(struct aw_monitor *monitor)
 				&aw_monitor_control_group);
 	}
 }
-

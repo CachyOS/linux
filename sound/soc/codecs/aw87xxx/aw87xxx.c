@@ -16,7 +16,6 @@
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <linux/gpio.h>
-#include <linux/of_gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
