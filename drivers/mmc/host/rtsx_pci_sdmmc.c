@@ -1470,6 +1470,10 @@ static int sdmmc_init_sd_express(struct mmc_host *mmc, struct mmc_ios *ios)
 		RTS5261_MCU_BUS_SEL_MASK | RTS5261_MCU_CLOCK_SEL_MASK
 		| RTS5261_DRIVER_ENABLE_FW,
 		RTS5261_MCU_CLOCK_SEL_16M | RTS5261_DRIVER_ENABLE_FW);
+
+	/* Release the D0 hold so the function can delink for the NVMe handoff. */
+	rtsx_pci_sd_express_handoff(pcr);
+
 	host->eject = true;
 	return 0;
 }
@@ -1529,6 +1533,14 @@ static void realtek_init_host(struct realtek_pci_sdmmc *host)
 		MMC_CAP_UHS_SDR12 | MMC_CAP_UHS_SDR25;
 	if (pcr->rtd3_en && !(quirks & QUIRK_NO_AGGRESSIVE_PM))
 		mmc->caps = mmc->caps | MMC_CAP_AGGRESSIVE_PM;
+
+	/* These devices skip aggressive PM, so the function must stay in D0
+	 * rather than power-cycle a present card on runtime suspend.  Arm the
+	 * gate here; it is cleared in rtsx_pci_sdmmc_drv_remove() so it never
+	 * outlives this host.
+	 */
+	rtsx_pci_set_sd_pm_keepalive(pcr, !!(quirks & QUIRK_NO_AGGRESSIVE_PM));
+
 	mmc->caps2 = MMC_CAP2_NO_PRESCAN_POWERUP | MMC_CAP2_FULL_PWR_CYCLE |
 		MMC_CAP2_NO_SDIO;
 	mmc->max_current_330 = 400;
@@ -1598,6 +1610,7 @@ static int rtsx_pci_sdmmc_drv_probe(struct platform_device *pdev)
 
 	ret = mmc_add_host(mmc);
 	if (ret) {
+		rtsx_pci_set_sd_pm_keepalive(pcr, false);
 		pm_runtime_dont_use_autosuspend(&pdev->dev);
 		pm_runtime_disable(&pdev->dev);
 		return ret;
@@ -1613,6 +1626,8 @@ static void rtsx_pci_sdmmc_drv_remove(struct platform_device *pdev)
 	struct mmc_host *mmc;
 
 	pcr = host->pcr;
+	/* Drop the runtime-suspend gate so it never outlives this host. */
+	rtsx_pci_set_sd_pm_keepalive(pcr, false);
 	pcr->slots[RTSX_SD_CARD].p_dev = NULL;
 	pcr->slots[RTSX_SD_CARD].card_event = NULL;
 	mmc = host->mmc;

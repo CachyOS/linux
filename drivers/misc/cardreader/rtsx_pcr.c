@@ -843,6 +843,28 @@ int rtsx_pci_switch_output_voltage(struct rtsx_pcr *pcr, u8 voltage)
 }
 EXPORT_SYMBOL_GPL(rtsx_pci_switch_output_voltage);
 
+/* Open the gate for an SD-Express handoff so runtime suspend can delink. */
+void rtsx_pci_sd_express_handoff(struct rtsx_pcr *pcr)
+{
+	mutex_lock(&pcr->pcr_mutex);
+	pcr->sd_express = true;
+	mutex_unlock(&pcr->pcr_mutex);
+}
+EXPORT_SYMBOL_GPL(rtsx_pci_sd_express_handoff);
+
+/* Set whether runtime suspend must keep a present card powered.  The SD/MMC
+ * host knows the policy but may probe asynchronously after the parent, so it
+ * (un)sets the gate here; the gate is read live in rtsx_pci_runtime_suspend(),
+ * so there is no establishment race with a card already present at boot.
+ */
+void rtsx_pci_set_sd_pm_keepalive(struct rtsx_pcr *pcr, bool keepalive)
+{
+	mutex_lock(&pcr->pcr_mutex);
+	pcr->sd_pm_keepalive = keepalive;
+	mutex_unlock(&pcr->pcr_mutex);
+}
+EXPORT_SYMBOL_GPL(rtsx_pci_set_sd_pm_keepalive);
+
 unsigned int rtsx_pci_card_exist(struct rtsx_pcr *pcr)
 {
 	unsigned int val;
@@ -913,6 +935,12 @@ static void rtsx_pci_card_detect(struct work_struct *work)
 		pcr->card_exist |= card_inserted;
 		pcr->card_exist &= ~card_removed;
 	}
+
+	/* A removed SD card cancels any pending SD-Express handoff, so the gate
+	 * protects the next card inserted into the slot.
+	 */
+	if (!(pcr->card_exist & SD_EXIST))
+		pcr->sd_express = false;
 
 	mutex_unlock(&pcr->pcr_mutex);
 
@@ -1774,11 +1802,23 @@ static int rtsx_pci_runtime_suspend(struct device *device)
 
 	dev_dbg(device, "--> %s\n", __func__);
 
+	/* On devices that keep the card initialised across runtime suspend
+	 * (aggressive PM disabled), never power-cycle a card the mmc core
+	 * still owns: stay in D0 instead.  ASPM L1 was already re-enabled by
+	 * rtsx_pci_runtime_idle(), so idle link power is still saved.
+	 */
+	mutex_lock(&pcr->pcr_mutex);
+	if (pcr->sd_pm_keepalive && (pcr->card_exist & SD_EXIST) &&
+	    !pcr->sd_express) {
+		mutex_unlock(&pcr->pcr_mutex);
+		return -EBUSY;
+	}
+	mutex_unlock(&pcr->pcr_mutex);
+
 	cancel_delayed_work_sync(&pcr->carddet_work);
 
 	mutex_lock(&pcr->pcr_mutex);
 	rtsx_pci_power_off(pcr, HOST_ENTER_S3, true);
-
 	mutex_unlock(&pcr->pcr_mutex);
 
 	return 0;
