@@ -1271,6 +1271,8 @@ struct rtsx_pcr {
 	u8			ocp_stat2;
 	u8			ovp_stat;
 	u8			rtd3_en;
+	bool			sd_pm_keepalive;
+	bool			sd_express;
 };
 
 #define PID_524A	0x524A
@@ -1305,6 +1307,8 @@ struct rtsx_pcr {
 				(((ddr50) << 16) | ((sdr50) << 8) | (sdr104))
 
 void rtsx_pci_start_run(struct rtsx_pcr *pcr);
+void rtsx_pci_sd_express_handoff(struct rtsx_pcr *pcr);
+void rtsx_pci_set_sd_pm_keepalive(struct rtsx_pcr *pcr, bool keepalive);
 int rtsx_pci_write_register(struct rtsx_pcr *pcr, u16 addr, u8 mask, u8 data);
 int rtsx_pci_read_register(struct rtsx_pcr *pcr, u16 addr, u8 *data);
 int rtsx_pci_write_phy_register(struct rtsx_pcr *pcr, u8 addr, u16 val);
