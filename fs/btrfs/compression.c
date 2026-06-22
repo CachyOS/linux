@@ -155,16 +155,24 @@ static unsigned long btrfs_compr_pool_scan(struct shrinker *sh, struct shrink_co
 {
 	LIST_HEAD(remove);
 	struct list_head *tmp, *next;
-	int freed;
+	unsigned long nr_to_scan = sc ? sc->nr_to_scan : ULONG_MAX;
+	unsigned long freed;
 
 	if (compr_pool.count == 0)
 		return SHRINK_STOP;
 
-	/* For now, just simply drain the whole list. */
+	/*
+	 * Reclaim only the requested batch under memory pressure. Teardown
+	 * passes a NULL shrink_control and still drains the whole cache.
+	 */
 	spin_lock(&compr_pool.lock);
-	list_splice_init(&compr_pool.list, &remove);
-	freed = compr_pool.count;
-	compr_pool.count = 0;
+	for (freed = 0; freed < nr_to_scan && !list_empty(&compr_pool.list); freed++) {
+		struct page *page;
+
+		page = list_first_entry(&compr_pool.list, struct page, lru);
+		list_move(&page->lru, &remove);
+	}
+	compr_pool.count -= freed;
 	spin_unlock(&compr_pool.lock);
 
 	list_for_each_safe(tmp, next, &remove) {
