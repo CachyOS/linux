@@ -9,6 +9,7 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/freezer.h>
+#include <linux/cpumask.h>
 #include <trace/events/btrfs.h>
 #include "async-thread.h"
 
@@ -59,14 +60,8 @@ struct btrfs_fs_info * __pure btrfs_work_owner(const struct btrfs_work *work)
 
 bool btrfs_workqueue_normal_congested(const struct btrfs_workqueue *wq)
 {
-	/*
-	 * We could compare wq->pending with num_online_cpus()
-	 * to support "thresh == NO_THRESHOLD" case, but it requires
-	 * moving up atomic_inc/dec in thresh_queue/exec_hook. Let's
-	 * postpone it until someone needs the support of that case.
-	 */
 	if (wq->thresh == NO_THRESHOLD)
-		return false;
+		return atomic_read(&wq->pending) > 2 * num_online_cpus();
 
 	return atomic_read(&wq->pending) > wq->thresh * 2;
 }
@@ -154,8 +149,6 @@ struct btrfs_workqueue *btrfs_alloc_ordered_workqueue(
  */
 static inline void thresh_queue_hook(struct btrfs_workqueue *wq)
 {
-	if (wq->thresh == NO_THRESHOLD)
-		return;
 	atomic_inc(&wq->pending);
 }
 
@@ -170,10 +163,11 @@ static inline void thresh_exec_hook(struct btrfs_workqueue *wq)
 	long pending;
 	bool need_change = false;
 
+	atomic_dec(&wq->pending);
+
 	if (wq->thresh == NO_THRESHOLD)
 		return;
 
-	atomic_dec(&wq->pending);
 	spin_lock(&wq->thres_lock);
 	/*
 	 * Use wq->count to limit the calling frequency of
