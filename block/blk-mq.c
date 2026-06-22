@@ -2268,11 +2268,18 @@ static bool blk_mq_hctx_empty_cpumask(struct blk_mq_hw_ctx *hctx)
 static int blk_mq_hctx_next_cpu(struct blk_mq_hw_ctx *hctx)
 {
 	bool tried = false;
+	int this_cpu = raw_smp_processor_id();
 	int next_cpu = hctx->next_cpu;
 
 	/* Switch to unbound if no allowable CPUs in this hctx */
 	if (hctx->queue->nr_hw_queues == 1 || blk_mq_hctx_empty_cpumask(hctx))
 		return WORK_CPU_UNBOUND;
+
+	if (cpumask_test_cpu(this_cpu, hctx->cpumask)) {
+		hctx->next_cpu = this_cpu;
+		hctx->next_cpu_batch = BLK_MQ_CPU_WORK_BATCH;
+		return this_cpu;
+	}
 
 	if (--hctx->next_cpu_batch <= 0) {
 select_cpu:
