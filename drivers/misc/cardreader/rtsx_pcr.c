@@ -22,6 +22,7 @@
 #include <linux/unaligned.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
+#include <linux/dmi.h>
 
 #include "rtsx_pcr.h"
 #include "rts5261.h"
@@ -1472,6 +1473,48 @@ static int rtsx_pci_init_chip(struct rtsx_pcr *pcr)
 	} else {
 		option->ltr_enabled = false;
 		option->force_clkreq_0 = true;
+	}
+
+	/*
+	 * MSI Claw 8 EX AI+ (MS-1T91): the BIOS leaves ASPM L1/L1 substates
+	 * off on the card reader's Root Port and the FADT disables OS ASPM
+	 * management, so L1.2 never gets enabled, CLKREQ# is forced low, and
+	 * the SoC cannot reach S0ix. Enable L1 and the substates on both
+	 * ends ourselves; a companion quirk already made the core program
+	 * the L1.2 timing.
+	 */
+	if (dmi_match(DMI_BOARD_NAME, "MS-1T91")) {
+		struct pci_dev *parent = pci_upstream_bridge(pcr->pci);
+		u32 l1ss_en = PCI_L1SS_CTL1_ASPM_L1_1 | PCI_L1SS_CTL1_ASPM_L1_2 |
+			      PCI_L1SS_CTL1_PCIPM_L1_1 | PCI_L1SS_CTL1_PCIPM_L1_2;
+		u32 v;
+
+		option->force_clkreq_0 = false;
+		option->ltr_enabled = true;
+		option->ltr_active = true;
+		rtsx_set_dev_flag(pcr, ASPM_L1_1_EN | ASPM_L1_2_EN |
+				  PM_L1_1_EN | PM_L1_2_EN);
+
+		/* Enable L1 substates while ASPM L1 is still disabled... */
+		if (pcr->pci->l1ss) {
+			u16 off = pcr->pci->l1ss + PCI_L1SS_CTL1;
+
+			pci_read_config_dword(pcr->pci, off, &v);
+			pci_write_config_dword(pcr->pci, off, v | l1ss_en);
+		}
+		if (parent && parent->l1ss) {
+			u16 off = parent->l1ss + PCI_L1SS_CTL1;
+
+			pci_read_config_dword(parent, off, &v);
+			pci_write_config_dword(parent, off, v | l1ss_en);
+		}
+		/* ...then enable ASPM L1 upstream port first, then downstream. */
+		if (parent)
+			pcie_capability_set_word(parent, PCI_EXP_LNKCTL,
+						 PCI_EXP_LNKCTL_ASPM_L1);
+		pcie_capability_set_word(pcr->pci, PCI_EXP_LNKCTL,
+					 PCI_EXP_LNKCTL_ASPM_L1);
+		pcr_dbg(pcr, "MSI Claw 8 EX AI+ quirk: enabled ASPM L1.2\n");
 	}
 
 	if (pcr->ops->fetch_vendor_settings)
