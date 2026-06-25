@@ -128,6 +128,14 @@ static const struct dmi_system_id rtsx_pci_sdmmc_dmi_quirks[] = {
 			DMI_MATCH(DMI_BOARD_NAME, "MS-1T8K"),
 		},
 	},
+	{
+		/* MSI Claw 8 EX AI+ CG3EM */
+		.driver_data = (void *)QUIRK_NO_AGGRESSIVE_PM,
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T91"),
+		},
+	},
 	{},
 };
 
