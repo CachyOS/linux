@@ -6548,3 +6548,28 @@ static void quirk_rts5264_reset_degraded_link(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_REALTEK, 0x5264,
 			quirk_rts5264_reset_degraded_link);
+
+#ifdef CONFIG_PCIEASPM
+/*
+ * MSI Claw 8 EX AI+ (MS-1T91): the BIOS hides ASPM L1 from the Link
+ * Capabilities of the Root Port hosting the RTS5264 reader, so the
+ * ASPM core never programs L1/L1SS, the PMC power-gate domain never
+ * gates, and the SoC cannot reach S0ix in s2idle. Mark the Port
+ * L1-capable.
+ */
+static void quirk_msi_claw8_rp_aspm_l1(struct pci_dev *dev)
+{
+	if (dev->devfn != PCI_DEVFN(0x1c, 0))
+		return;
+
+	if (!dmi_match(DMI_BOARD_NAME, "MS-1T91"))
+		return;
+
+	if (dev->aspm_l1_support)
+		return;
+
+	dev->aspm_l1_support = 1;
+	pci_info(dev, "ASPM: forcing L1 support (MSI Claw 8 EX AI+ hides L1 in LnkCap)\n");
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0xe43a, quirk_msi_claw8_rp_aspm_l1);
+#endif
