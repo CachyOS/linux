@@ -1351,6 +1351,12 @@ struct task_struct {
 	struct list_head		perf_event_list;
 	struct perf_ctx_data __rcu	*perf_ctx_data;
 #endif
+#if defined(CONFIG_SMP) && defined(CONFIG_PREEMPTION)
+	union {
+		cpumask_t                       *ipi_mask_ptr;
+		unsigned long			ipi_mask_val;
+	};
+#endif
 #ifdef CONFIG_DEBUG_PREEMPT
 	unsigned long			preempt_disable_ip;
 #endif
