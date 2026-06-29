@@ -2,6 +2,7 @@
 #include <linux/spinlock.h>
 #include <linux/module.h>
 #include <linux/random.h>
+#include <linux/string.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/pcm.h>
@@ -258,8 +259,8 @@ static void aaudio_init_dev(struct aaudio_device *a, aaudio_device_id_t dev_id)
     INIT_LIST_HEAD(&sdev->list);
     sdev->dev_id = dev_id;
     sdev->buf_id = AAUDIO_BUFFER_ID_NONE;
-    strncpy(sdev->uid, uid, uid_len);
-    sdev->uid[uid_len + 1] = '\0';
+    memcpy(sdev->uid, uid, uid_len);
+    sdev->uid[uid_len] = '\0';
 
     if (aaudio_cmd_get_primitive_property(a, dev_id, dev_id,
             AAUDIO_PROP(AAUDIO_PROP_SCOPE_INPUT, AAUDIO_PROP_LATENCY, 0), NULL, 0, &sdev->in_latency, sizeof(u32)))
