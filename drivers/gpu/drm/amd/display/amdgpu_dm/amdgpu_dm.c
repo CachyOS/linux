@@ -13894,8 +13894,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	copy_range_to_amdgpu_connector(amdgpu_dm_connector, connector);
 
 	/* DP & eDP excluding PCONs */
-	if ((sink->sink_signal == SIGNAL_TYPE_EDP ||
-	     sink->sink_signal == SIGNAL_TYPE_DISPLAY_PORT) && !is_pcon) {
+	if (dc_is_dp_sst_signal(sink->sink_signal) && !is_pcon) {
 		/* Some eDP panels only have the refresh rate range info in DisplayID */
 		if (is_aconn_range_invalid(amdgpu_dm_connector))
 			parse_edid_displayid_vrr(amdgpu_dm_connector, edid);
@@ -13922,7 +13921,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 		}
 
 	/* HDMI and DP -> HDMI PCONs */
-	} else if (sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A || pcon_allowed) {
+	} else if (dc_is_hdmi_signal(sink->sink_signal) || pcon_allowed) {
 		/* Prefer HDMI VRR */
 		if (hdmi_vrr.supported) {
 			amdgpu_dm_connector->as_type = ADAPTIVE_SYNC_TYPE_HDMI;
