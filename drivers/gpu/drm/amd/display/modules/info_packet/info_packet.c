@@ -654,6 +654,22 @@ static void build_vtem_infopacket_header(struct dc_info_packet *infopacket)
 	infopacket->sb[VTEM_PB6] = VTEM_DATA_SET_LENGTH;
 }
 
+static bool is_hdmi_vic_mode(const struct dc_stream_state *stream)
+{
+	if (stream->timing.hdmi_vic == 0)
+		return false;
+
+	if (stream->timing.h_total < 3840 ||
+	    stream->timing.v_total < 2160)
+		return false;
+
+	/* 3D/ALLM forces HDMI VIC -> CTA VIC translation */
+	if (stream->view_format != VIEW_3D_FORMAT_NONE)
+		return false;
+
+	return true;
+}
+
 static void build_vtem_infopacket_data(const struct dc_stream_state *stream,
 		const struct mod_vrr_params *vrr,
 		struct dc_info_packet *infopacket)
