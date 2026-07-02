@@ -45,6 +45,13 @@ static void pci_destroy_dev(struct pci_dev *dev)
 
 	device_del(&dev->dev);
 
+	/*
+	 * pci_stop_dev() already left the PME poll list, but a runtime
+	 * suspend racing with the driver release can put the device back
+	 * on it. Runtime PM is permanently off now, so leave it for good.
+	 */
+	pci_pme_active(dev, false);
+
 	down_write(&pci_bus_sem);
 	list_del(&dev->bus_list);
 	up_write(&pci_bus_sem);
