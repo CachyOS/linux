@@ -1261,8 +1261,17 @@ void pci_configure_ltr(struct pci_dev *pdev)
 		}
 
 		bridge = pci_upstream_bridge(pdev);
-		if (bridge && bridge->ltr_path)
+		if (bridge && bridge->ltr_path) {
+			/*
+			 * A hot-added device may arrive with LTR still
+			 * enabled from before its removal. Re-enable LTR
+			 * in the bridge, or the device's LTR messages are
+			 * handled as Unsupported Requests (PCIe r6.0, sec
+			 * 6.18).
+			 */
+			pci_bridge_reconfigure_ltr(pdev);
 			pdev->ltr_path = 1;
+		}
 
 		return;
 	}
