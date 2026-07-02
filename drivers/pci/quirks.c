@@ -6572,4 +6572,48 @@ static void quirk_msi_claw8_rp_aspm_l1(struct pci_dev *dev)
 	pci_info(dev, "ASPM: forcing L1 support (MSI Claw 8 EX AI+ hides L1 in LnkCap)\n");
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0xe43a, quirk_msi_claw8_rp_aspm_l1);
+
+/*
+ * SD Express cards put their own NVMe controller on the reader's link
+ * (see the RTS5264 quirks above), where the rtsx driver cannot apply
+ * the ASPM L1.2 the MSI Claw 8 EX AI+ needs for S0ix. Do the
+ * equivalent here when the card's NVMe controller is enumerated.
+ */
+static void quirk_msi_claw8_sdexpress_aspm_l1(struct pci_dev *pdev)
+{
+	struct pci_dev *parent;
+	u32 l1ss_en = PCI_L1SS_CTL1_ASPM_L1_1 | PCI_L1SS_CTL1_ASPM_L1_2 |
+		      PCI_L1SS_CTL1_PCIPM_L1_1 | PCI_L1SS_CTL1_PCIPM_L1_2;
+	u32 v;
+
+	if (!dmi_match(DMI_BOARD_NAME, "MS-1T91"))
+		return;
+
+	parent = pci_upstream_bridge(pdev);
+	if (!parent || parent->vendor != PCI_VENDOR_ID_INTEL ||
+	    parent->device != 0xe43a)
+		return;
+
+	/* Enable L1 substates while ASPM L1 is still disabled... */
+	if (pdev->l1ss) {
+		pci_read_config_dword(pdev, pdev->l1ss + PCI_L1SS_CTL1, &v);
+		pci_write_config_dword(pdev, pdev->l1ss + PCI_L1SS_CTL1,
+				       v | l1ss_en);
+	}
+	if (parent->l1ss) {
+		pci_read_config_dword(parent, parent->l1ss + PCI_L1SS_CTL1, &v);
+		pci_write_config_dword(parent, parent->l1ss + PCI_L1SS_CTL1,
+				       v | l1ss_en);
+	}
+	/* ...then enable ASPM L1 upstream port first, then downstream */
+	pcie_capability_set_word(parent, PCI_EXP_LNKCTL,
+				 PCI_EXP_LNKCTL_ASPM_L1);
+	pcie_capability_set_word(pdev, PCI_EXP_LNKCTL,
+				 PCI_EXP_LNKCTL_ASPM_L1);
+
+	pci_info(pdev, "enabled ASPM L1.2 for S0ix (SD Express card link)\n");
+}
+DECLARE_PCI_FIXUP_CLASS_FINAL(PCI_ANY_ID, PCI_ANY_ID,
+			      PCI_CLASS_STORAGE_EXPRESS, 0,
+			      quirk_msi_claw8_sdexpress_aspm_l1);
 #endif
