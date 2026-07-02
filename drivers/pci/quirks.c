@@ -6464,3 +6464,87 @@ static void quirk_rts5264_mask_replay_timer_timeout(struct pci_dev *pdev)
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_REALTEK, 0x5264,
 			 quirk_rts5264_mask_replay_timer_timeout);
 #endif
+
+/*
+ * When an SD Express card is removed, the mux in front of the RTS5264
+ * hands the link back to the card reader, and the link regularly comes
+ * back degraded: stuck at 2.5GT/s, streaming corrected errors from both
+ * ends. Only a Secondary Bus Reset recovers it. The degradation often
+ * develops only after the reader has enumerated, so check the link a
+ * few seconds after every runtime hot-add, from a workqueue where the
+ * reader can be removed, the bus reset, and everything rescanned.
+ */
+static void rts5264_link_reset_work_fn(struct work_struct *work)
+{
+	static unsigned long last_reset;
+	struct pci_dev *pdev, *bridge;
+	bool degraded = false;
+	u16 lnksta, aer;
+	u32 corsts;
+
+	pdev = pci_get_device(PCI_VENDOR_ID_REALTEK, 0x5264, NULL);
+	if (!pdev)
+		return;
+
+	bridge = pci_upstream_bridge(pdev);
+	if (!bridge)
+		goto out;
+
+	/* Stuck below the supported speed? */
+	pcie_capability_read_word(pdev, PCI_EXP_LNKSTA, &lnksta);
+	if ((lnksta & PCI_EXP_LNKSTA_CLS) == PCI_EXP_LNKSTA_CLS_2_5GB &&
+	    pcie_get_speed_cap(pdev) > PCIE_SPEED_2_5GT &&
+	    pcie_get_speed_cap(bridge) > PCIE_SPEED_2_5GT)
+		degraded = true;
+
+	/* Errors received on the reader side since it was enumerated? */
+	aer = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_ERR);
+	if (!degraded && aer) {
+		pci_read_config_dword(pdev, aer + PCI_ERR_COR_STATUS, &corsts);
+		if (corsts & (PCI_ERR_COR_RCVR | PCI_ERR_COR_BAD_TLP |
+			      PCI_ERR_COR_BAD_DLLP))
+			degraded = true;
+	}
+
+	/* Replay churn on the Port side? */
+	aer = pci_find_ext_capability(bridge, PCI_EXT_CAP_ID_ERR);
+	if (!degraded && aer) {
+		pci_read_config_dword(bridge, aer + PCI_ERR_COR_STATUS,
+				      &corsts);
+		if (corsts & (PCI_ERR_COR_REP_TIMER | PCI_ERR_COR_REP_ROLL))
+			degraded = true;
+	}
+
+	if (!degraded)
+		goto out;
+
+	/* Guard against a link that stays degraded despite the reset */
+	if (last_reset && time_before(jiffies, last_reset + 30 * HZ))
+		goto out;
+	last_reset = jiffies;
+
+	pci_lock_rescan_remove();
+	pci_info(pdev, "resetting degraded link\n");
+	pci_stop_and_remove_bus_device(pdev);
+	pci_bridge_secondary_bus_reset(bridge);
+	/* The bus is childless now, so the reset could not wait for it */
+	pcie_wait_for_link(bridge, true);
+	pci_rescan_bus_bridge_resize(bridge);
+	pci_unlock_rescan_remove();
+out:
+	pci_dev_put(pdev);
+}
+
+static DECLARE_DELAYED_WORK(rts5264_link_reset_work,
+			    rts5264_link_reset_work_fn);
+
+static void quirk_rts5264_reset_degraded_link(struct pci_dev *pdev)
+{
+	/* Links degraded already at boot are not reset-recoverable */
+	if (system_state < SYSTEM_RUNNING)
+		return;
+
+	schedule_delayed_work(&rts5264_link_reset_work, 3 * HZ);
+}
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_REALTEK, 0x5264,
+			quirk_rts5264_reset_degraded_link);
