@@ -6396,6 +6396,29 @@ static void pci_fixup_d3cold_delay_1sec(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_FINAL(0x5555, 0x0004, pci_fixup_d3cold_delay_1sec);
 
+/*
+ * The MSI Claw 8 EX AI+ muxes its microSD Express slot onto this Root
+ * Port through an RTS5264 card reader, with in-band presence only, so
+ * a runtime suspended Port can never see a card change and the slot is
+ * dead until a manual rescan. Block only runtime D3: keeping the Port
+ * in D0 across system sleep hangs s2idle entry here, and pciehp
+ * re-checks presence on resume anyway.
+ */
+static void quirk_sdexpress_no_runtime_d3(struct pci_dev *pdev)
+{
+	if (pdev->devfn != PCI_DEVFN(0x1c, 0))
+		return;
+
+	if (!dmi_match(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd.") ||
+	    !dmi_match(DMI_BOARD_NAME, "MS-1T91"))
+		return;
+
+	pci_info(pdev, "disabling runtime D3 for SD Express slot Port (in-band presence only)\n");
+	pdev->no_runtime_d3 = 1;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0xe43a,
+			 quirk_sdexpress_no_runtime_d3);
+
 #ifdef CONFIG_PCIEAER
 static void pci_mask_replay_timer_timeout(struct pci_dev *pdev, struct pci_dev *reporter)
 {

@@ -637,7 +637,9 @@ __setup("pcie_ports=", pcie_port_setup);
 #ifdef CONFIG_PM
 static int pcie_port_runtime_suspend(struct device *dev)
 {
-	if (!to_pci_dev(dev)->bridge_d3)
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	if (!pdev->bridge_d3 || pdev->no_runtime_d3)
 		return -EBUSY;
 
 	return pcie_port_device_runtime_suspend(dev);
@@ -645,12 +647,14 @@ static int pcie_port_runtime_suspend(struct device *dev)
 
 static int pcie_port_runtime_idle(struct device *dev)
 {
+	struct pci_dev *pdev = to_pci_dev(dev);
+
 	/*
 	 * Assume the PCI core has set bridge_d3 whenever it thinks the port
 	 * should be good to go to D3.  Everything else, including moving
 	 * the port to D3, is handled by the PCI core.
 	 */
-	return to_pci_dev(dev)->bridge_d3 ? 0 : -EBUSY;
+	return pdev->bridge_d3 && !pdev->no_runtime_d3 ? 0 : -EBUSY;
 }
 
 static const struct dev_pm_ops pcie_portdrv_pm_ops = {
