@@ -15,6 +15,7 @@
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
@@ -87,6 +88,11 @@ enum {
 	 * on a full charge, but showing degradation in full charge cap.
 	 */
 	ACPI_BATTERY_QUIRK_DEGRADED_FULL_CHARGE,
+	/* Some ECs report a _BST present rate that never tracks load
+	 * (seen on the MSI Claw 8 EX AI+). Derive current/power from
+	 * capacity change over time instead.
+	 */
+	ACPI_BATTERY_QUIRK_DERIVE_RATE,
 };
 
 struct acpi_battery {
@@ -101,6 +107,9 @@ struct acpi_battery {
 	int revision;
 	int rate_now;
 	int capacity_now;
+	int derived_rate;
+	int derive_cap_prev;
+	unsigned long derive_time_prev;
 	int voltage_now;
 	int design_capacity;
 	int full_charge_capacity;
@@ -149,6 +158,7 @@ static int acpi_battery_technology(struct acpi_battery *battery)
 }
 
 static int acpi_battery_get_state(struct acpi_battery *battery);
+static void acpi_battery_derive_rate(struct acpi_battery *battery);
 
 static int acpi_battery_is_charged(struct acpi_battery *battery)
 {
@@ -204,6 +214,10 @@ static int acpi_battery_get_property(struct power_supply *psy,
 	if (acpi_battery_present(battery)) {
 		/* run battery update only if it is present */
 		acpi_battery_get_state(battery);
+		if (test_bit(ACPI_BATTERY_QUIRK_DERIVE_RATE, &battery->flags)) {
+			acpi_battery_derive_rate(battery);
+			battery->rate_now = battery->derived_rate;
+		}
 	} else if (psp != POWER_SUPPLY_PROP_PRESENT)
 		return -ENODEV;
 	switch (psp) {
@@ -930,6 +944,67 @@ static void find_battery(const struct dmi_header *dm, void *private)
 	}
 }
 
+static const struct dmi_system_id acpi_battery_derive_rate_dmi[] = {
+	{
+		/* MSI Claw 8 EX AI+: EC _BST present rate is bogus */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR,
+				  "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T91"),
+		},
+	},
+	{}
+};
+
+/*
+ * Recomputes battery->derived_rate; the caller mirrors it into rate_now.
+ * Kept as a separate field rather than writing rate_now directly here,
+ * since extract_package() (called from acpi_battery_get_state(), before
+ * this runs) overwrites rate_now with the raw EC value on every real
+ * refresh, and derived_rate must survive that to be held steady between
+ * capacity ticks.
+ */
+static void acpi_battery_derive_rate(struct acpi_battery *battery)
+{
+	unsigned long now = jiffies;
+	unsigned long dt;
+	u64 dcap;
+
+	/*
+	 * When neither charging nor discharging (full/on AC), the true rate
+	 * is ~0 but capacity_now stops ticking, so the hold-steady logic
+	 * below would freeze the last discharge value. Report 0 and re-seed.
+	 */
+	if (!(battery->state & (ACPI_BATTERY_STATE_DISCHARGING |
+				ACPI_BATTERY_STATE_CHARGING))) {
+		battery->derived_rate = 0;
+		battery->derive_cap_prev = ACPI_BATTERY_VALUE_UNKNOWN;
+		return;
+	}
+
+	if (!ACPI_BATTERY_CAPACITY_VALID(battery->capacity_now)) {
+		battery->derived_rate = ACPI_BATTERY_VALUE_UNKNOWN;
+		return;
+	}
+
+	if (battery->derive_cap_prev == ACPI_BATTERY_VALUE_UNKNOWN) {
+		battery->derive_cap_prev = battery->capacity_now;
+		battery->derive_time_prev = now;
+		return;
+	}
+
+	if (battery->capacity_now == battery->derive_cap_prev)
+		return;
+
+	dcap = abs(battery->derive_cap_prev - battery->capacity_now);
+	dt = now - battery->derive_time_prev;
+	battery->derive_cap_prev = battery->capacity_now;
+	battery->derive_time_prev = now;
+
+	if (dt)
+		battery->derived_rate = div64_u64(dcap * 3600 * HZ, dt);
+}
+
 /*
  * According to the ACPI spec, some kinds of primary batteries can
  * report percentage battery remaining capacity directly to OS.
@@ -1260,6 +1335,12 @@ static int acpi_battery_probe(struct platform_device *pdev)
 
 	if (acpi_has_method(battery->device->handle, "_BIX"))
 		set_bit(ACPI_BATTERY_XINFO_PRESENT, &battery->flags);
+
+	if (dmi_check_system(acpi_battery_derive_rate_dmi)) {
+		battery->derived_rate = ACPI_BATTERY_VALUE_UNKNOWN;
+		battery->derive_cap_prev = ACPI_BATTERY_VALUE_UNKNOWN;
+		set_bit(ACPI_BATTERY_QUIRK_DERIVE_RATE, &battery->flags);
+	}
 
 	result = devm_acpi_battery_update_retry(dev, battery);
 	if (result)
