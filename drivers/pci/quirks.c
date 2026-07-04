@@ -6399,17 +6399,25 @@ DECLARE_PCI_FIXUP_FINAL(0x5555, 0x0004, pci_fixup_d3cold_delay_1sec);
 #ifdef CONFIG_PCIEAER
 static void pci_mask_replay_timer_timeout(struct pci_dev *pdev, struct pci_dev *reporter)
 {
+	u16 aer;
 	u32 val;
 
-	if (!reporter || !reporter->aer_cap)
+	if (!reporter)
+		return;
+
+	/* A header fixup runs before pci_aer_init() caches the offset */
+	aer = reporter->aer_cap;
+	if (!aer)
+		aer = pci_find_ext_capability(reporter, PCI_EXT_CAP_ID_ERR);
+	if (!aer)
 		return;
 
 	pci_info(reporter, "mask Replay Timer Timeout Correctable Errors due to %s hardware defect",
 		 pci_name(pdev));
 
-	pci_read_config_dword(reporter, reporter->aer_cap + PCI_ERR_COR_MASK, &val);
+	pci_read_config_dword(reporter, aer + PCI_ERR_COR_MASK, &val);
 	val |= PCI_ERR_COR_REP_TIMER;
-	pci_write_config_dword(reporter, reporter->aer_cap + PCI_ERR_COR_MASK, val);
+	pci_write_config_dword(reporter, aer + PCI_ERR_COR_MASK, val);
 }
 
 /* The Port leading to the GL975x reports the errors. */
@@ -6419,4 +6427,17 @@ static void quirk_gl975x_mask_replay_timer_timeout(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9750, quirk_gl975x_mask_replay_timer_timeout);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_GLI, 0x9755, quirk_gl975x_mask_replay_timer_timeout);
+
+/*
+ * The RTS5264 reports the errors itself. Mask them in a header fixup:
+ * the reader is hot-added whenever an SD Express card is removed, and
+ * the storm can hang the machine once pci_aer_init() enables error
+ * reporting, before a final fixup would run.
+ */
+static void quirk_rts5264_mask_replay_timer_timeout(struct pci_dev *pdev)
+{
+	pci_mask_replay_timer_timeout(pdev, pdev);
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_REALTEK, 0x5264,
+			 quirk_rts5264_mask_replay_timer_timeout);
 #endif
