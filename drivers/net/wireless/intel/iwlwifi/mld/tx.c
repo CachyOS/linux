@@ -987,6 +987,9 @@ void iwl_mld_tx_from_txq(struct iwl_mld *mld, struct ieee80211_txq *txq)
 	struct sk_buff *skb = NULL;
 	u8 zero_addr[ETH_ALEN] = {};
 
+	if (unlikely(test_bit(STATUS_FW_ERROR, &mld->trans->status)))
+		return;
+
 	/*
 	 * Don't transmit during firmware restart. The firmware is dead,
 	 * so iwl_trans_tx() would return -EIO for each frame. Avoid the
