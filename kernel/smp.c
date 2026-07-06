@@ -66,10 +66,9 @@ int smpcfd_prepare_cpu(unsigned int cpu)
 	}
 
 	/*
-	 * The percpu csd is allocated only once and never freed.
-	 * This ensures that smp_call_function_many_cond() can safely
-	 * access the csd of an offlined CPU if it gets preempted
-	 * during csd_lock_wait().
+	 * Allocate the per-CPU CSD the first time a CPU comes up. It is
+	 * not freed when the CPU is offlined, so csd_lock_wait() can access
+	 * it even when the CPU was offlined after preemption was re-enabled.
 	 */
 	if (!cfd->csd)
 		cfd->csd = alloc_percpu(call_single_data_t);
@@ -650,7 +649,12 @@ void flush_smp_call_function_queue(void)
 }
 
 static int __smp_call_function_single(int cpu, smp_call_func_t func,
+<<<<<<< HEAD
 			void *info, const struct cpumask *mask, int wait)
+=======
+				      void *info, const struct cpumask *mask,
+				      bool wait)
+>>>>>>> 7.2/preempt-ipi
 {
 	call_single_data_t *csd;
 	call_single_data_t csd_stack = {
@@ -722,6 +726,7 @@ static int __smp_call_function_single(int cpu, smp_call_func_t func,
 
 /**
  * smp_call_function_single - Run a function on a specific CPU
+<<<<<<< HEAD
  * @cpu: Specific target CPU for this function.
  * @func: The function to run. This must be fast and non-blocking.
  * @info: An arbitrary pointer to pass to the function.
@@ -731,6 +736,16 @@ static int __smp_call_function_single(int cpu, smp_call_func_t func,
  */
 int smp_call_function_single(int cpu, smp_call_func_t func, void *info,
 			     int wait)
+=======
+ * @cpu:	Specific target CPU for this function.
+ * @func:	The function to run. This must be fast and non-blocking.
+ * @info:	An arbitrary pointer to pass to the function.
+ * @wait:	If true, wait until function has completed on other CPUs.
+ *
+ * Returns: %0 on success, else a negative status code.
+ */
+int smp_call_function_single(int cpu, smp_call_func_t func, void *info, bool wait)
+>>>>>>> 7.2/preempt-ipi
 {
 	return __smp_call_function_single(cpu, func, info, NULL, wait);
 }
@@ -784,10 +799,10 @@ EXPORT_SYMBOL_GPL(smp_call_function_single_async);
 
 /**
  * smp_call_function_any - Run a function on any of the given cpus
- * @mask: The mask of cpus it can run on.
- * @func: The function to run. This must be fast and non-blocking.
- * @info: An arbitrary pointer to pass to the function.
- * @wait: If true, wait until function has completed.
+ * @mask:	The mask of cpus it can run on.
+ * @func:	The function to run. This must be fast and non-blocking.
+ * @info:	An arbitrary pointer to pass to the function.
+ * @wait:	If true, wait until function has completed.
  *
  * Selection preference:
  *	1) current cpu if in @mask
@@ -859,16 +874,29 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 					unsigned int scf_flags,
 					smp_cond_func_t cond_func)
 {
+<<<<<<< HEAD
 	int cpu, last_cpu, this_cpu;
 	struct call_function_data *cfd;
 	bool wait = scf_flags & SCF_WAIT;
 	struct cpumask *cpumask, *task_mask;
 	int nr_cpus = 0;
+=======
+	struct cpumask *cpumask, *task_mask;
+	bool wait = scf_flags & SCF_WAIT;
+	struct call_function_data *cfd;
+	int cpu, last_cpu, this_cpu;
+>>>>>>> 7.2/preempt-ipi
 	bool run_remote = false;
+	int nr_cpus = 0;
 
 	this_cpu = get_cpu();
+<<<<<<< HEAD
 	task_mask = smp_task_ipi_mask(current);
 	cfd = this_cpu_ptr(&cfd_data);
+=======
+	cfd = this_cpu_ptr(&cfd_data);
+	task_mask = smp_task_ipi_mask(current);
+>>>>>>> 7.2/preempt-ipi
 	if (task_mask)
 		cpumask = task_mask;
 	else
@@ -953,6 +981,7 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 	}
 
 	/*
+<<<<<<< HEAD
 	 * Waiting for completion can take time, especially with many CPUs.
 	 * On a PREEMPT kernel a per-task cpumask is used to track CPUs with
 	 * pending IPI requests. This allows preemption to be enabled before
@@ -962,6 +991,16 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 	 */
 	if (task_mask)
 		put_cpu();
+=======
+	 * The IPI work has been queued and dispatched. On PREEMPT kernels,
+	 * tasks created through dup_task_struct() have task-local wait masks.
+	 * The boot init_task can fall back to cfd->cpumask when the mask is
+	 * not inlined, but other tasks still use task-local masks and cannot
+	 * overwrite it. On !PREEMPT kernels, preempt_enable() cannot schedule
+	 * another task, so the per-CPU mask remains protected.
+	 */
+	put_cpu();
+>>>>>>> 7.2/preempt-ipi
 
 	if (run_remote && wait) {
 		for_each_cpu(cpu, cpumask) {
@@ -978,11 +1017,11 @@ static void smp_call_function_many_cond(const struct cpumask *mask,
 
 /**
  * smp_call_function_many() - Run a function on a set of CPUs.
- * @mask: The set of cpus to run on (only runs on online subset).
- * @func: The function to run. This must be fast and non-blocking.
- * @info: An arbitrary pointer to pass to the function.
- * @wait: If true, wait (atomically) until function has completed
- *        on other CPUs.
+ * @mask:	The set of cpus to run on (only runs on online subset).
+ * @func:	The function to run. This must be fast and non-blocking.
+ * @info:	An arbitrary pointer to pass to the function.
+ * @wait:	If true, wait (atomically) until function has completed
+ *		on other CPUs.
  *
  * You must not call this function with disabled interrupts or from a
  * hardware interrupt handler or from a bottom half handler.
@@ -999,10 +1038,10 @@ EXPORT_SYMBOL(smp_call_function_many);
 
 /**
  * smp_call_function() - Run a function on all other CPUs.
- * @func: The function to run. This must be fast and non-blocking.
- * @info: An arbitrary pointer to pass to the function.
- * @wait: If true, wait (atomically) until function has completed
- *        on other CPUs.
+ * @func:	The function to run. This must be fast and non-blocking.
+ * @info:	An arbitrary pointer to pass to the function.
+ * @wait:	If true, wait (atomically) until function has completed
+ *		on other CPUs.
  *
  * If @wait is true, then returns once @func has returned; otherwise
  * it returns just before the target cpu calls @func.
@@ -1013,7 +1052,11 @@ EXPORT_SYMBOL(smp_call_function_many);
 void smp_call_function(smp_call_func_t func, void *info, int wait)
 {
 	smp_call_function_many_cond(cpu_online_mask, func, info,
+<<<<<<< HEAD
 			wait ? SCF_WAIT : 0, NULL);
+=======
+				    wait ? SCF_WAIT : 0, NULL);
+>>>>>>> 7.2/preempt-ipi
 }
 EXPORT_SYMBOL(smp_call_function);
 

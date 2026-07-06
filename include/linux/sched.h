@@ -1361,7 +1361,7 @@ struct task_struct {
 #endif
 #if defined(CONFIG_SMP) && defined(CONFIG_PREEMPTION)
 	union {
-		cpumask_t                       *ipi_mask_ptr;
+		cpumask_t			*ipi_mask_ptr;
 		unsigned long			ipi_mask_val;
 	};
 #endif

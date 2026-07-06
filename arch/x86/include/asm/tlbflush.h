@@ -215,6 +215,12 @@ extern void initialize_tlbstate_and_flush(void);
 #define FLUSH_TLB_INFO_ALIGN MIN(SMP_CACHE_BYTES, 64)
 
 /*
+ * Keep stack-allocated flush_tlb_info cacheline aligned, but cap the
+ * alignment to avoid excessive stack usage on large-cacheline systems.
+ */
+#define FLUSH_TLB_INFO_ALIGN MIN(SMP_CACHE_BYTES, 64)
+
+/*
  * TLB flushing:
  *
  *  - flush_tlb_all() flushes all processes TLBs
