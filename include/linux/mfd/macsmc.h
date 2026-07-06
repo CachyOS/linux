@@ -47,6 +47,14 @@ typedef u32 smc_key;
 #define APPLE_SMC_WRITABLE BIT(6)
 #define APPLE_SMC_FUNCTION BIT(4)
 
+#define SMC_MSG_READ_KEY                0x10
+#define SMC_MSG_WRITE_KEY               0x11
+#define SMC_MSG_GET_KEY_BY_INDEX        0x12
+#define SMC_MSG_GET_KEY_INFO            0x13
+#define SMC_MSG_INITIALIZE              0x17
+#define SMC_MSG_NOTIFICATION            0x18
+#define SMC_MSG_RW_KEY                  0x20
+
 /**
  * struct apple_smc_key_info - Information for a SMC key as returned by SMC
  * @type_code: FourCC code indicating the type for this key.
@@ -81,12 +89,59 @@ enum apple_smc_boot_stage {
 };
 
 /**
+ * struct apple_smc_backend_ops - SMC backend interface
+ * @read: Read SMC key data
+ * @write: Write SMC key data
+ * @enter_atomic: Enter atomic access mode
+ * @write_atomic: Atomic write to SMC key
+ * @rw: Combined write/read transaction
+ * @get_key_by_index: Resolve key by index
+ * @get_key_info: Get metadata for key
+ */
+struct apple_smc_backend_ops {
+	int (*read)(void *cookie, smc_key key, void *buf, size_t size);
+	int (*write)(void *cookie, smc_key key, const void *buf, size_t size);
+	int (*enter_atomic)(void *cookie);
+	int (*write_atomic)(void *cookie, smc_key key, const void *buf, size_t size);
+	int (*rw)(void *cookie, smc_key key, const void *wbuf, size_t wsize,
+		  void *rbuf, size_t rsize);
+	int (*get_key_by_index)(void *cookie, int index, smc_key *key);
+	int (*get_key_info)(void *cookie, smc_key key,
+			    struct apple_smc_key_info *info);
+};
+
+/**
  * struct apple_smc
  * @dev: Underlying device struct for the physical backend device
  * @key_count: Number of available SMC keys
  * @first_key: First valid SMC key
  * @last_key: Last valid SMC key
+ * @be: Backend operations for SMC access
+ * @be_cookie: Backend context passed to ops callbacks
+ * @mutex: Mutex for non-atomic mode
+ * @lock: Spinlock for atomic mode
+ * @is_acpi: True if the backend is provided via ACPI
+ */
+struct apple_smc {
+	struct device *dev;
+
+	u32 key_count;
+	smc_key first_key;
+	smc_key last_key;
+
+	const struct apple_smc_backend_ops *be;
+	void *be_cookie;
+
+	struct mutex mutex;
+	spinlock_t lock;
+
+	bool is_acpi;
+};
+
+/**
+ * struct apple_smc_rtkit
  * @event_handlers: Notifier call chain for events received from SMC
+ * @dev: Device struct for the physical backend device
  * @rtk: Pointer to Apple RTKit instance
  * @init_done: Completion for initialization
  * @boot_stage: Current boot stage of SMC
@@ -98,18 +153,11 @@ enum apple_smc_boot_stage {
  * @atomic_pending: Flag indicating pending atomic command
  * @cmd_done: Completion for command execution in non-atomic mode
  * @cmd_ret: Return value from SMC for last command
- * @mutex: Mutex for non-atomic mode
- * @lock: Spinlock for atomic mode
  */
-struct apple_smc {
-	struct device *dev;
-
-	u32 key_count;
-	smc_key first_key;
-	smc_key last_key;
-
+struct apple_smc_rtkit {
 	struct blocking_notifier_head event_handlers;
 
+	struct device *dev;
 	struct apple_rtkit *rtk;
 
 	struct completion init_done;
@@ -125,9 +173,27 @@ struct apple_smc {
 	bool atomic_pending;
 	struct completion cmd_done;
 	u64 cmd_ret;
+};
 
-	struct mutex mutex;
-	spinlock_t lock;
+/**
+ * struct apple_smc_acpi
+ * @dev: Device struct for the physical backend device
+ * @iomem_base: MMIO base address (virtual address)
+ * @iomem_base_addr: MMIO base address (physical address)
+ * @iomem_base_size: MMIO base size
+ * @is_mmio: True if MMIO is supported
+ * @port_base: PIO base address
+ * @has_port: True if PIO address exists
+ */
+struct apple_smc_acpi {
+	struct device *dev;
+
+	u8 __iomem *iomem_base;
+	u32 iomem_base_addr, iomem_base_size;
+	bool is_mmio;
+
+	u16 port_base;
+	bool has_port;
 };
 
 /**
@@ -224,6 +290,16 @@ static inline bool apple_smc_key_exists(struct apple_smc *smc, smc_key key)
 {
 	return apple_smc_get_key_info(smc, key, NULL) >= 0;
 }
+
+/**
+ * apple_smc_probe - Initialize Apple SMC device
+ * @dev: Device for the SMC instance
+ * @ops: Backend operations for SMC access
+ * @cookie: Opaque backend context
+ *
+ * Return: Zero on success, negative errno on error
+ */
+int apple_smc_probe(struct device *dev, const struct apple_smc_backend_ops *ops, void *cookie);
 
 #define APPLE_SMC_TYPE_OPS(type) \
 	static inline int apple_smc_read_##type(struct apple_smc *smc, smc_key key, type *p) \

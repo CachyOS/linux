@@ -27,14 +27,6 @@
 #define SMC_SHMEM_SIZE			0x1000
 #define SMC_MAX_SIZE			255
 
-#define SMC_MSG_READ_KEY		0x10
-#define SMC_MSG_WRITE_KEY		0x11
-#define SMC_MSG_GET_KEY_BY_INDEX	0x12
-#define SMC_MSG_GET_KEY_INFO		0x13
-#define SMC_MSG_INITIALIZE		0x17
-#define SMC_MSG_NOTIFICATION		0x18
-#define SMC_MSG_RW_KEY			0x20
-
 #define SMC_DATA			GENMASK_ULL(63, 32)
 #define SMC_WSIZE			GENMASK_ULL(31, 24)
 #define SMC_SIZE			GENMASK_ULL(23, 16)
@@ -44,23 +36,12 @@
 
 #define SMC_TIMEOUT_MS		500
 
-static const struct mfd_cell apple_smc_devs[] = {
-	MFD_CELL_NAME("macsmc-input"),
-	MFD_CELL_NAME("macsmc-power"),
-	MFD_CELL_OF("macsmc-gpio", NULL, NULL, 0, 0, "apple,smc-gpio"),
-	MFD_CELL_OF("macsmc-hwmon", NULL, NULL, 0, 0, "apple,smc-hwmon"),
-	MFD_CELL_OF("macsmc-reboot", NULL, NULL, 0, 0, "apple,smc-reboot"),
-	MFD_CELL_OF("macsmc-rtc", NULL, NULL, 0, 0, "apple,smc-rtc"),
-};
-
-static int apple_smc_cmd_locked(struct apple_smc *smc, u64 cmd, u64 arg,
+static int apple_smc_rtkit_cmd_locked(struct apple_smc_rtkit *smc, u64 cmd, u64 arg,
 				  u64 size, u64 wsize, u32 *ret_data)
 {
 	u8 result;
 	int ret;
 	u64 msg;
-
-	lockdep_assert_held(&smc->mutex);
 
 	if (smc->boot_stage != APPLE_SMC_INITIALIZED)
 		return -EIO;
@@ -103,15 +84,7 @@ static int apple_smc_cmd_locked(struct apple_smc *smc, u64 cmd, u64 arg,
 	return FIELD_GET(SMC_SIZE, smc->cmd_ret);
 }
 
-static int apple_smc_cmd(struct apple_smc *smc, u64 cmd, u64 arg,
-			 u64 size, u64 wsize, u32 *ret_data)
-{
-	guard(mutex)(&smc->mutex);
-
-	return apple_smc_cmd_locked(smc, cmd, arg, size, wsize, ret_data);
-}
-
-static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
+static int apple_smc_rtkit_rw_locked(struct apple_smc_rtkit *smc, smc_key key,
 				const void *wbuf, size_t wsize,
 				void *rbuf, size_t rsize)
 {
@@ -119,8 +92,6 @@ static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
 	u32 rdata;
 	int ret;
 	u64 cmd;
-
-	lockdep_assert_held(&smc->mutex);
 
 	if (rsize > SMC_MAX_SIZE)
 		return -EINVAL;
@@ -149,7 +120,7 @@ static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
 		return -EINVAL;
 	}
 
-	ret = apple_smc_cmd_locked(smc, cmd, key, smc_size, smc_wsize, &rdata);
+	ret = apple_smc_rtkit_cmd_locked(smc, cmd, key, smc_size, smc_wsize, &rdata);
 	if (ret < 0)
 		return ret;
 
@@ -169,48 +140,43 @@ static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
 	return ret;
 }
 
-int apple_smc_read(struct apple_smc *smc, smc_key key, void *buf, size_t size)
+static int apple_smc_rtkit_read(void *cookie, smc_key key, void *buf, size_t size)
 {
-	guard(mutex)(&smc->mutex);
+	struct apple_smc_rtkit *smc = cookie;
 
-	return apple_smc_rw_locked(smc, key, NULL, 0, buf, size);
+	return apple_smc_rtkit_rw_locked(smc, key, NULL, 0, buf, size);
 }
-EXPORT_SYMBOL(apple_smc_read);
 
-int apple_smc_write(struct apple_smc *smc, smc_key key, const void *buf, size_t size)
+static int apple_smc_rtkit_write(void *cookie, smc_key key, const void *buf, size_t size)
 {
-	guard(mutex)(&smc->mutex);
+	struct apple_smc_rtkit *smc = cookie;
 
-	return apple_smc_rw_locked(smc, key, buf, size, NULL, 0);
+	return apple_smc_rtkit_rw_locked(smc, key, buf, size, NULL, 0);
 }
-EXPORT_SYMBOL(apple_smc_write);
 
-int apple_smc_rw(struct apple_smc *smc, smc_key key, const void *wbuf, size_t wsize,
+static int apple_smc_rtkit_rw(void *cookie, smc_key key, const void *wbuf, size_t wsize,
 		 void *rbuf, size_t rsize)
 {
-	guard(mutex)(&smc->mutex);
+	struct apple_smc_rtkit *smc = cookie;
 
-	return apple_smc_rw_locked(smc, key, wbuf, wsize, rbuf, rsize);
+	return apple_smc_rtkit_rw_locked(smc, key, wbuf, wsize, rbuf, rsize);
 }
-EXPORT_SYMBOL(apple_smc_rw);
 
-int apple_smc_get_key_by_index(struct apple_smc *smc, int index, smc_key *key)
+static int apple_smc_rtkit_get_key_by_index(void *cookie, int index, smc_key *key)
 {
-	int ret;
+	struct apple_smc_rtkit *smc = cookie;
 
-	ret = apple_smc_cmd(smc, SMC_MSG_GET_KEY_BY_INDEX, index, 0, 0, key);
-
-	*key = swab32(*key);
-	return ret;
+	return apple_smc_rtkit_cmd_locked(smc, SMC_MSG_GET_KEY_BY_INDEX, index, 0, 0, key);
 }
-EXPORT_SYMBOL(apple_smc_get_key_by_index);
 
-int apple_smc_get_key_info(struct apple_smc *smc, smc_key key, struct apple_smc_key_info *info)
+static int apple_smc_rtkit_get_key_info(void *cookie, smc_key key,
+		struct apple_smc_key_info *info)
 {
+	struct apple_smc_rtkit *smc = cookie;
 	u8 key_info[6];
 	int ret;
 
-	ret = apple_smc_cmd(smc, SMC_MSG_GET_KEY_INFO, key, 0, 0, NULL);
+	ret = apple_smc_rtkit_cmd_locked(smc, SMC_MSG_GET_KEY_INFO, key, 0, 0, NULL);
 	if (ret >= 0 && info) {
 		memcpy_fromio(key_info, smc->shmem.iomem, sizeof(key_info));
 		info->size = key_info[0];
@@ -219,11 +185,10 @@ int apple_smc_get_key_info(struct apple_smc *smc, smc_key key, struct apple_smc_
 	}
 	return ret;
 }
-EXPORT_SYMBOL(apple_smc_get_key_info);
 
-int apple_smc_enter_atomic(struct apple_smc *smc)
+static int apple_smc_rtkit_enter_atomic(void *cookie)
 {
-	guard(mutex)(&smc->mutex);
+	struct apple_smc_rtkit *smc = cookie;
 
 	/*
 	 * Disable notifications since this is called before shutdown and no
@@ -235,17 +200,16 @@ int apple_smc_enter_atomic(struct apple_smc *smc)
 	 */
 	const u8 flag = 0;
 
-	apple_smc_rw_locked(smc, SMC_KEY(NTAP), &flag, sizeof(flag), NULL, 0);
+	apple_smc_rtkit_rw_locked(smc, SMC_KEY(NTAP), &flag, sizeof(flag), NULL, 0);
 
 	smc->atomic_mode = true;
 
 	return 0;
 }
-EXPORT_SYMBOL(apple_smc_enter_atomic);
 
-int apple_smc_write_atomic(struct apple_smc *smc, smc_key key, const void *buf, size_t size)
+static int apple_smc_rtkit_write_atomic(void *cookie, smc_key key, const void *buf, size_t size)
 {
-	guard(spinlock_irqsave)(&smc->lock);
+	struct apple_smc_rtkit *smc = cookie;
 	u8 result;
 	int ret;
 	u64 msg;
@@ -293,11 +257,20 @@ int apple_smc_write_atomic(struct apple_smc *smc, smc_key key, const void *buf, 
 
 	return FIELD_GET(SMC_SIZE, smc->cmd_ret);
 }
-EXPORT_SYMBOL(apple_smc_write_atomic);
+
+static const struct apple_smc_backend_ops apple_smc_rtkit_backend_ops = {
+	.read = apple_smc_rtkit_read,
+	.write = apple_smc_rtkit_write,
+	.enter_atomic = apple_smc_rtkit_enter_atomic,
+	.write_atomic = apple_smc_rtkit_write_atomic,
+	.rw = apple_smc_rtkit_rw,
+	.get_key_by_index = apple_smc_rtkit_get_key_by_index,
+	.get_key_info = apple_smc_rtkit_get_key_info,
+};
 
 static void apple_smc_rtkit_crashed(void *cookie, const void *bfr, size_t bfr_len)
 {
-	struct apple_smc *smc = cookie;
+	struct apple_smc_rtkit *smc = cookie;
 
 	smc->boot_stage = APPLE_SMC_ERROR_CRASHED;
 	dev_err(smc->dev, "SMC crashed! Your system will reboot in a few seconds...\n");
@@ -305,7 +278,7 @@ static void apple_smc_rtkit_crashed(void *cookie, const void *bfr, size_t bfr_le
 
 static int apple_smc_rtkit_shmem_setup(void *cookie, struct apple_rtkit_shmem *bfr)
 {
-	struct apple_smc *smc = cookie;
+	struct apple_smc_rtkit *smc = cookie;
 	size_t bfr_end;
 
 	if (!bfr->iova) {
@@ -332,7 +305,7 @@ static int apple_smc_rtkit_shmem_setup(void *cookie, struct apple_rtkit_shmem *b
 
 static bool apple_smc_rtkit_recv_early(void *cookie, u8 endpoint, u64 message)
 {
-	struct apple_smc *smc = cookie;
+	struct apple_smc_rtkit *smc = cookie;
 
 	if (endpoint != SMC_ENDPOINT) {
 		dev_warn(smc->dev, "Received message for unknown endpoint 0x%x\n", endpoint);
@@ -368,7 +341,7 @@ static bool apple_smc_rtkit_recv_early(void *cookie, u8 endpoint, u64 message)
 
 static void apple_smc_rtkit_recv(void *cookie, u8 endpoint, u64 message)
 {
-	struct apple_smc *smc = cookie;
+	struct apple_smc_rtkit *smc = cookie;
 
 	if (endpoint != SMC_ENDPOINT) {
 		dev_warn(smc->dev, "Received message for unknown endpoint 0x%x\n", endpoint);
@@ -392,32 +365,23 @@ static const struct apple_rtkit_ops apple_smc_rtkit_ops = {
 
 static void apple_smc_rtkit_shutdown(void *data)
 {
-	struct apple_smc *smc = data;
+	struct apple_smc_rtkit *smc = data;
 
 	/* Shut down SMC firmware, if it's not completely wedged */
 	if (apple_rtkit_is_running(smc->rtk))
 		apple_rtkit_quiesce(smc->rtk);
 }
 
-static void apple_smc_disable_notifications(void *data)
-{
-	struct apple_smc *smc = data;
-
-	apple_smc_write_flag(smc, SMC_KEY(NTAP), false);
-}
-
-static int apple_smc_probe(struct platform_device *pdev)
+static int apple_smc_rtkit_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct apple_smc *smc;
-	u32 count;
+	struct apple_smc_rtkit *smc;
 	int ret;
 
 	smc = devm_kzalloc(dev, sizeof(*smc), GFP_KERNEL);
 	if (!smc)
 		return -ENOMEM;
 
-	mutex_init(&smc->mutex);
 	smc->dev = &pdev->dev;
 	smc->sram_base = devm_platform_get_and_ioremap_resource(pdev, 1, &smc->sram);
 	if (IS_ERR(smc->sram_base))
@@ -458,47 +422,28 @@ static int apple_smc_probe(struct platform_device *pdev)
 		return -EIO;
 	}
 
-	dev_set_drvdata(&pdev->dev, smc);
 	BLOCKING_INIT_NOTIFIER_HEAD(&smc->event_handlers);
 
-	ret = apple_smc_read_u32(smc, SMC_KEY(#KEY), &count);
-	if (ret)
-		return dev_err_probe(smc->dev, ret, "Failed to get key count");
-	smc->key_count = be32_to_cpu(count);
-
-	/* Enable notifications */
-	apple_smc_write_flag(smc, SMC_KEY(NTAP), true);
-	ret = devm_add_action_or_reset(dev, apple_smc_disable_notifications, smc);
-	if (ret)
-		return ret;
-
-	ret = devm_mfd_add_devices(smc->dev, PLATFORM_DEVID_NONE,
-				   apple_smc_devs, ARRAY_SIZE(apple_smc_devs),
-				   NULL, 0, NULL);
-	if (ret)
-		return dev_err_probe(smc->dev, ret, "Failed to register sub-devices");
-
-
-	return 0;
+	return apple_smc_probe(dev, &apple_smc_rtkit_backend_ops, smc);
 }
 
-static const struct of_device_id apple_smc_of_match[] = {
+static const struct of_device_id apple_smc_rtkit_of_match[] = {
 	{ .compatible = "apple,t8103-smc" },
 	{ .compatible = "apple,smc" },
 	{},
 };
-MODULE_DEVICE_TABLE(of, apple_smc_of_match);
+MODULE_DEVICE_TABLE(of, apple_smc_rtkit_of_match);
 
-static struct platform_driver apple_smc_driver = {
+static struct platform_driver apple_smc_rtkit_driver = {
 	.driver = {
-		.name = "macsmc",
-		.of_match_table = apple_smc_of_match,
+		.name = "macsmc-rtkit",
+		.of_match_table = apple_smc_rtkit_of_match,
 	},
-	.probe = apple_smc_probe,
+	.probe = apple_smc_rtkit_probe,
 };
-module_platform_driver(apple_smc_driver);
+module_platform_driver(apple_smc_rtkit_driver);
 
 MODULE_AUTHOR("Hector Martin <marcan@marcan.st>");
 MODULE_AUTHOR("Sven Peter <sven@kernel.org>");
 MODULE_LICENSE("Dual MIT/GPL");
-MODULE_DESCRIPTION("Apple SMC driver");
+MODULE_DESCRIPTION("Apple SMC RTKIT Backend driver");

@@ -14,6 +14,7 @@
 #include <linux/dmi.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/x86/apple.h>
 #include <asm/cpu_device_id.h>
 #include <asm/intel-family.h>
 #include "../internal.h"
@@ -607,6 +608,9 @@ bool acpi_quirk_skip_acpi_ac_and_battery(void)
 	const struct dmi_system_id *dmi_id;
 	long quirks = 0;
 	int i;
+
+	if (x86_apple_machine)
+		return true;
 
 	dmi_id = dmi_first_match(acpi_quirk_skip_dmi_ids);
 	if (dmi_id)
