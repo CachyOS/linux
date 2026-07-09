@@ -674,6 +674,22 @@ int smu_v11_0_set_allowed_mask(struct smu_context *smu)
 	int ret = 0;
 	uint32_t feature_mask[2];
 
+	if (smu->adev->pdev->vendor == 0x1002 && smu->adev->pdev->device == 0x7340 &&
+			smu->adev->pdev->subsystem_vendor == 0x106B &&
+			smu->adev->pdev->subsystem_device == 0x0219) {
+		ret = smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_SetAllowedFeaturesMaskLow,
+				0xABC9AFBB, NULL);
+		if (ret)
+			goto failed;
+
+		ret = smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_SetAllowedFeaturesMaskHigh,
+				0xFFFFFD42, NULL);
+		if (ret)
+			goto failed;
+
+		return 0;
+	}
+
 	if (smu_feature_list_is_empty(smu, SMU_FEATURE_LIST_ALLOWED) ||
 	    feature->feature_num < SMU_FEATURE_NUM_DEFAULT) {
 		ret = -EINVAL;
