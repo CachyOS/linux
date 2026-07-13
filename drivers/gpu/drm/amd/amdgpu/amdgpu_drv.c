@@ -218,7 +218,7 @@ int amdgpu_smu_pptable_id = -1;
  * PSR (bit 3) disabled by default
  * EDP NO POWER SEQUENCING (bit 4) disabled by default
  */
-uint amdgpu_dc_feature_mask = 2;
+uint amdgpu_dc_feature_mask = 0x402;
 uint amdgpu_dc_debug_mask;
 uint amdgpu_dc_visual_confirm;
 int amdgpu_async_gfx_ring = 1;
