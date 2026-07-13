@@ -68,4 +68,10 @@ config DRM_AMD_DC_KUNIT_TEST
 	  For more information on KUnit and unit tests in general, please
 	  refer to the KUnit documentation in Documentation/dev-tools/kunit/.
 
+config AMD_PRIVATE_COLOR
+	bool "Enable KMS color management by AMD for AMD"
+	default n
+	help
+	  This option extends the KMS color management API with AMD driver-specific properties to enhance the color management support on AMD Steam Deck.
+
 endmenu
