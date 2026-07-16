@@ -435,10 +435,10 @@ static inline cycles_t write_tsc_adjustment(s64 adjustment)
 {
 	cycles_t adjval, nextval;
 
-	rdmsrl(MSR_IA32_TSC, adjval);
+	rdmsrq(MSR_IA32_TSC, adjval);
 	adjval += adjustment;
-	wrmsrl(MSR_IA32_TSC, adjval);
-	rdmsrl(MSR_IA32_TSC, nextval);
+	wrmsrq(MSR_IA32_TSC, adjval);
+	rdmsrq(MSR_IA32_TSC, nextval);
 
 	/*
 	 * Estimated clock cycle overhead for wrmsr + rdmsr
