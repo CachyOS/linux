@@ -3,7 +3,7 @@ subdir-ccflags-y += -I$(src)/../../common
 
 snd-hda-cirrus-scodec-y :=	cirrus_scodec.o
 snd-hda-cirrus-scodec-test-y :=	cirrus_scodec_test.o
-snd-hda-scodec-aw88399-y :=	aw88399_hda.o aw88399_hda_property.o
+snd-hda-scodec-aw88399-y :=	aw88399_hda.o
 snd-hda-scodec-aw88399-i2c-y :=	aw88399_hda_i2c.o
 snd-hda-scodec-cs35l41-y :=	cs35l41_hda.o cs35l41_hda_property.o
 snd-hda-scodec-cs35l41-i2c-y :=	cs35l41_hda_i2c.o

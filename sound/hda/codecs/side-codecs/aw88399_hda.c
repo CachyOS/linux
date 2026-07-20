@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// aw88399_hda.c -- AW88399 HDA side codec driver
+// AW88399 HDA side codec driver
 //
 // Based on cs35l41_hda.c and aw88399.c
 //
@@ -8,36 +8,16 @@
 #include <linux/acpi.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pm_runtime.h>
-#include <linux/property.h>
-#include <linux/regmap.h>
+#include <linux/string.h>
 #include <sound/hda_codec.h>
-#include <sound/soc.h>
-#include "hda_component.h"
 #include "../generic.h"
+#include "hda_component.h"
 #include "aw88399_hda.h"
-#include "aw88399_hda_property.h"
-#include "../../soc/codecs/aw88395/aw88395_device.h"
 
 #define AW88399_HDA_I2C_BASE_ADDR	0x34
-#define AW88399_HDA_MAX_AMPS		2
-
-#define AW88399_ACPI_PROP_DEV_INDEX	"awinic,dev-index"
-#define AW88399_ACPI_PROP_SPK_POS	"awinic,speaker-position"
-#define AW88399_ACPI_PROP_SPK_ID	"awinic,speaker-id"
-
-static const struct regmap_config aw88399_hda_regmap_i2c = {
-	.reg_bits = 8,
-	.val_bits = 16,
-	.max_register = AW88399_REG_MAX,
-	.reg_format_endian = REGMAP_ENDIAN_LITTLE,
-	.val_format_endian = REGMAP_ENDIAN_BIG,
-};
-
-static void aw88399_hda_acpi_notify(acpi_handle handle, u32 event, struct device *dev);
 
 static void aw88399_hda_playback_hook(struct device *dev, int action)
 {
@@ -45,7 +25,7 @@ static void aw88399_hda_playback_hook(struct device *dev, int action)
 	struct aw88399 *core = aw88399->core;
 	int ret = 0;
 
-	dev_dbg(dev, "Playback action: %d\n", action);
+	dev_dbg(aw88399->dev, "Playback action: %d\n", action);
 
 	switch (action) {
 	case HDA_GEN_PCM_ACT_OPEN:
@@ -53,16 +33,14 @@ static void aw88399_hda_playback_hook(struct device *dev, int action)
 		aw88399->playing = true;
 		break;
 	case HDA_GEN_PCM_ACT_PREPARE:
-		/* Start amplifier */
 		if (core)
 			aw88399_start(core, AW88399_SYNC_START);
 		break;
 	case HDA_GEN_PCM_ACT_CLEANUP:
-		/* Stop amplifier */
 		if (aw88399->aw_dev)
 			ret = aw88399_stop(aw88399->aw_dev);
 		if (ret)
-			dev_err(dev, "Failed to stop amplifier: %d\n", ret);
+			dev_err(aw88399->dev, "Failed to stop amplifier: %d\n", ret);
 		break;
 	case HDA_GEN_PCM_ACT_CLOSE:
 		if (aw88399->aw_dev)
@@ -72,7 +50,7 @@ static void aw88399_hda_playback_hook(struct device *dev, int action)
 		pm_runtime_put_autosuspend(dev);
 		break;
 	default:
-		dev_warn(dev, "Unsupported action: %d\n", action);
+		dev_warn(aw88399->dev, "Unsupported action: %d\n", action);
 		break;
 	}
 }
@@ -91,19 +69,14 @@ static int aw88399_hda_bind(struct device *dev, struct device *master, void *mas
 		return -EBUSY;
 
 	comp->dev = dev;
-	aw88399->codec = parent->codec;
 
 	strscpy(comp->name, dev_name(dev), sizeof(comp->name));
 
-	/* Set up playback hooks */
 	comp->playback_hook = aw88399_hda_playback_hook;
-	comp->acpi_notify = aw88399->adev ? aw88399_hda_acpi_notify : NULL;
-	comp->adev = aw88399->adev;
-	comp->acpi_notifications_supported = aw88399->acpi_notify_supported && aw88399->adev;
 
 	dev_info(aw88399->dev,
-		 "AW88399 Bound - channel %d, AWDZ8399 ACPI SSID %s\n",
-		 aw88399->channel, aw88399->acpi_subsystem_id);
+		 "AW88399 Bound - SSID: %s, channel: %d\n",
+		 aw88399->acpi_subsystem_id, aw88399->channel);
 
 	return 0;
 }
@@ -118,8 +91,7 @@ static void aw88399_hda_unbind(struct device *dev, struct device *master, void *
 	if (comp && (comp->dev == dev))
 		memset(comp, 0, sizeof(*comp));
 
-	aw88399->codec = NULL;
-	dev_info(dev, "Unbound from HDA codec\n");
+	dev_dbg(aw88399->dev, "Unbound from HDA codec\n");
 }
 
 static const struct component_ops aw88399_hda_comp_ops = {
@@ -127,83 +99,9 @@ static const struct component_ops aw88399_hda_comp_ops = {
 	.unbind = aw88399_hda_unbind,
 };
 
-static void aw88399_hda_acpi_notify(acpi_handle handle, u32 event, struct device *dev)
-{
-	struct aw88399_hda *aw88399 = dev_get_drvdata(dev);
-
-	dev_dbg(dev, "ACPI notify event 0x%x for channel %d\n", event, aw88399->channel);
-}
-
 static int aw88399_hda_index_from_i2c(struct aw88399_hda *aw88399)
 {
-	struct device *dev = aw88399->dev;
-	struct i2c_client *i2c = to_i2c_client(dev);
-	int index = i2c->addr - AW88399_HDA_I2C_BASE_ADDR;
-
-	if (index < 0 || index >= AW88399_HDA_MAX_AMPS) {
-		dev_warn(dev, "Unexpected I2C address 0x%02x, clamping index\n",
-			i2c->addr);
-		index = clamp(index, 0, AW88399_HDA_MAX_AMPS - 1);
-	}
-
-	return index;
-}
-
-static bool aw88399_hda_try_dsd_index(struct aw88399_hda *aw88399, int addr_index)
-{
-	struct device *dev = aw88399->dev;
-	u32 value;
-
-	if (device_property_read_u32(dev, AW88399_ACPI_PROP_DEV_INDEX, &value))
-		return false;
-
-	if (value >= AW88399_HDA_MAX_AMPS) {
-		dev_warn(dev, "_DSD dev-index %u out of range, ignoring\n", value);
-		return false;
-	}
-
-	aw88399->index = value;
-	dev_info(dev, "Using _DSD dev-index %u (I2C suggested %d)\n", value, addr_index);
-
-	return true;
-}
-
-static void aw88399_hda_parse_speaker_props(struct aw88399_hda *aw88399)
-{
-	struct device *dev = aw88399->dev;
-	u32 value;
-
-	aw88399->speaker_pos_valid = false;
-	aw88399->speaker_id_valid = false;
-
-	if (!device_property_read_u32(dev, AW88399_ACPI_PROP_SPK_POS, &value)) {
-		if (value < AW88399_HDA_MAX_AMPS) {
-			aw88399->speaker_pos = value;
-			aw88399->speaker_pos_valid = true;
-			dev_info(dev, "Speaker position from _DSD: %u\n", value);
-		} else {
-			dev_warn(dev, "_DSD speaker-position %u out of range\n", value);
-		}
-	}
-
-	if (!device_property_read_u32(dev, AW88399_ACPI_PROP_SPK_ID, &value)) {
-		aw88399->speaker_id = value;
-		aw88399->speaker_id_valid = true;
-		dev_info(dev, "Speaker ID from _DSD: %u\n", value);
-	}
-}
-
-static void aw88399_hda_hw_reset(struct aw88399_hda *aw88399)
-{
-	if (!aw88399->reset_gpio)
-		return;
-
-	gpiod_set_value_cansleep(aw88399->reset_gpio, 0);
-	usleep_range(1000, 2000);
-	gpiod_set_value_cansleep(aw88399->reset_gpio, 1);
-	usleep_range(1000, 2000);
-	gpiod_set_value_cansleep(aw88399->reset_gpio, 0);
-	usleep_range(3000, 4000);
+	return to_i2c_client(aw88399->dev)->addr - AW88399_HDA_I2C_BASE_ADDR;
 }
 
 static int aw88399_hda_init(struct aw88399_hda *aw88399)
@@ -212,9 +110,6 @@ static int aw88399_hda_init(struct aw88399_hda *aw88399)
 	struct i2c_client *i2c = to_i2c_client(dev);
 	struct aw88399 *core;
 	int ret;
-
-	/* Hardware reset */
-	aw88399_hda_hw_reset(aw88399);
 
 	core = devm_kzalloc(dev, sizeof(*core), GFP_KERNEL);
 	if (!core)
@@ -225,17 +120,15 @@ static int aw88399_hda_init(struct aw88399_hda *aw88399)
 	core->regmap = aw88399->regmap;
 	core->bsts_unreliable = aw88399->bsts_unreliable;
 
+	aw88399_hw_reset(core);
+
 	ret = aw88399_init(core, i2c, aw88399->regmap);
 	if (ret)
 		return ret;
 
 	/* Set channel BEFORE loading firmware so ACF parser sees correct value */
-	if (core->aw_pa) {
-		if (aw88399->speaker_pos_valid)
-			core->aw_pa->channel = aw88399->speaker_pos;
-		else
-			core->aw_pa->channel = aw88399->channel;
-	}
+	if (core->aw_pa)
+		aw88399_dev_set_channel(core, aw88399->channel);
 
 	ret = aw88399_request_firmware_file(core);
 	if (ret)
@@ -247,126 +140,127 @@ static int aw88399_hda_init(struct aw88399_hda *aw88399)
 	return 0;
 }
 
-static int aw88399_hda_acpi_probe(struct aw88399_hda *aw88399)
+static int aw88399_swap_channels(struct aw88399_hda *aw88399)
 {
-	struct device *dev = aw88399->dev;
-	struct i2c_client *i2c = to_i2c_client(dev);
-	struct acpi_device *adev;
-	struct device *physdev;
-	int addr_index;
-	u64 uid;
-	const char *sub;
-	int ret;
-	bool index_from_dsd = false;
-
-	addr_index = aw88399_hda_index_from_i2c(aw88399);
-	aw88399->index = addr_index;
-	aw88399->adev = NULL;
-	aw88399->acpi_subsystem_id = NULL;
-	aw88399->acpi_notify_supported = false;
-
-	adev = acpi_dev_get_first_match_dev("AWDZ8399", NULL, -1);
-	if (adev) {
-		physdev = get_device(acpi_get_first_physical_node(adev));
-		acpi_dev_put(adev);
-		if (physdev) {
-			sub = acpi_get_subsystem_id(ACPI_HANDLE(physdev));
-			put_device(physdev);
-			if (!IS_ERR_OR_NULL(sub))
-				aw88399->acpi_subsystem_id = sub;
-		}
-	}
-
-	adev = ACPI_COMPANION(dev);
-	if (!adev) {
-		dev_info(dev, "No ACPI companion, using I2C addr 0x%02x for index %d\n",
-			 i2c->addr, aw88399->index);
-		goto metadata;
-	}
-
-	aw88399->adev = adev;
-	aw88399->acpi_notify_supported = true;
-	index_from_dsd = aw88399_hda_try_dsd_index(aw88399, addr_index);
-
-	if (!index_from_dsd) {
-		ret = acpi_dev_uid_to_integer(adev, &uid);
-		if (ret) {
-			aw88399->index = addr_index;
-			dev_info(dev, "No ACPI _UID, using I2C addr 0x%02x for index %d\n",
-				 i2c->addr, aw88399->index);
-		} else if (uid >= AW88399_HDA_MAX_AMPS) {
-			dev_warn(dev, "ACPI _UID %llu out of range, falling back to I2C index %d\n",
-				 uid, addr_index);
-			aw88399->index = addr_index;
-		} else {
-			aw88399->index = (int)uid;
-			if (aw88399->index != addr_index)
-				dev_info(dev,
-					 "ACPI _UID %d overrides I2C addr 0x%02x suggestion %d\n",
-					 aw88399->index, i2c->addr, addr_index);
-			else
-				dev_info(dev, "ACPI _UID: %d (addr 0x%02x)\n",
-					 aw88399->index, i2c->addr);
-		}
-	}
-
-metadata:
-	aw88399_hda_parse_speaker_props(aw88399);
-	if (aw88399->speaker_pos_valid)
-		aw88399->channel = aw88399->speaker_pos;
-	else
-		aw88399->channel = aw88399->index;
-
-	if (aw88399->acpi_subsystem_id)
-		aw88399_add_properties(aw88399);
-
+	/*
+	 * Certain Lenovo Legion laptops have their
+	 * I2C wiring reversed: 0x34 is physically the right speaker,
+	 * 0x35 is the left. Swap channels to correct L/R assignment.
+	 * This is a model-specific hardware wiring issue, not a driver bug.
+	 */
+	aw88399->channel = 1 - aw88399->channel;
+	dev_dbg(aw88399->dev,
+		"Channel swap applied: index %d -> channel %d\n",
+		aw88399->index, aw88399->channel);
 	return 0;
 }
 
-int aw88399_hda_probe(struct device *dev, const char *device_name, int id, int irq)
+static int aw88399_skip_bsts_check(struct aw88399_hda *aw88399)
+{
+	/*
+	 * BSTS (boost-finished) status bit does not reliably report on
+	 * some hardware. On certain Lenovo Legion laptops, both amps
+	 * report BSTS=0 (boost not finished) during normal playback
+	 * despite clean audio output. Skip BSTS in the startup status
+	 * check to avoid false init failures.
+	 */
+	aw88399->bsts_unreliable = true;
+	dev_dbg(aw88399->dev, "BSTS status check disabled\n");
+	return 0;
+}
+
+static int aw88399_apply_legion_quirks(struct aw88399_hda *aw88399)
+{
+	aw88399_swap_channels(aw88399);
+	aw88399_skip_bsts_check(aw88399);
+	return 0;
+}
+
+struct aw88399_prop_model {
+	const char *ssid;
+	int (*apply_prop)(struct aw88399_hda *aw88399);
+};
+
+static const struct aw88399_prop_model aw88399_prop_model_table[] = {
+	{ "17AA3906", aw88399_apply_legion_quirks },
+	{ "17AA3907", aw88399_apply_legion_quirks },
+	{ "17AA3927", aw88399_apply_legion_quirks },
+	{ "17AA3928", aw88399_apply_legion_quirks },
+	{ "17AA3938", aw88399_apply_legion_quirks },
+	{ "17AA3939", aw88399_apply_legion_quirks },
+	{ }
+};
+
+static int aw88399_hda_acpi_probe(struct aw88399_hda *aw88399)
+{
+	struct acpi_device *adev;
+	struct device *physdev;
+	const char *sub;
+	const struct aw88399_prop_model *model;
+
+	aw88399->index = aw88399_hda_index_from_i2c(aw88399);
+	aw88399->channel = aw88399->index;
+	aw88399->acpi_subsystem_id = NULL;
+
+	adev = acpi_dev_get_first_match_dev("AWDZ8399", NULL, -1);
+
+	if (!adev) {
+		dev_err(aw88399->dev, "Failed to find an ACPI device for AWDZ8399\n");
+		return -ENODEV;
+	}
+
+	physdev = get_device(acpi_get_first_physical_node(adev));
+	acpi_dev_put(adev);
+
+	if (!physdev)
+		return -ENODEV;
+
+	sub = acpi_get_subsystem_id(ACPI_HANDLE(physdev));
+	put_device(physdev);
+	if (!IS_ERR_OR_NULL(sub))
+		aw88399->acpi_subsystem_id = sub;
+
+	if (aw88399->acpi_subsystem_id) {
+		for (model = aw88399_prop_model_table; model->ssid; model++) {
+			if (!strcasecmp(model->ssid, aw88399->acpi_subsystem_id)) {
+				dev_info(aw88399->dev,
+					 "Applying properties for SSID %s\n",
+					 aw88399->acpi_subsystem_id);
+				return model->apply_prop(aw88399);
+			}
+		}
+	}
+	return 0;
+}
+
+int aw88399_hda_probe(struct device *dev, struct regmap *regmap)
 {
 	struct aw88399_hda *aw88399;
-	struct i2c_client *i2c;
 	int ret;
 
 	aw88399 = devm_kzalloc(dev, sizeof(*aw88399), GFP_KERNEL);
 	if (!aw88399)
 		return -ENOMEM;
 
+	if (IS_ERR(regmap))
+		return dev_err_probe(dev, PTR_ERR(regmap), "Failed to obtain regmap\n");
+
 	aw88399->dev = dev;
+	aw88399->regmap = regmap;
 	dev_set_drvdata(dev, aw88399);
 
-	i2c = to_i2c_client(dev);
-
-	/* Get optional reset GPIO */
 	aw88399->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(aw88399->reset_gpio)) {
-		ret = PTR_ERR(aw88399->reset_gpio);
-		dev_err(dev, "Failed to get reset GPIO: %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(aw88399->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(aw88399->reset_gpio),
+				     "Failed to get reset GPIO\n");
 
-	/* Initialize regmap for I2C */
-	aw88399->regmap = devm_regmap_init_i2c(i2c, &aw88399_hda_regmap_i2c);
-	if (IS_ERR(aw88399->regmap)) {
-		ret = PTR_ERR(aw88399->regmap);
-		dev_err(dev, "Failed to init regmap: %d\n", ret);
-		return ret;
-	}
-
-	/* Parse ACPI data */
 	ret = aw88399_hda_acpi_probe(aw88399);
-	if (ret < 0) {
-		dev_err(dev, "ACPI probe failed: %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "ACPI probe failed\n");
 
-	/* Initialize chip */
 	ret = aw88399_hda_init(aw88399);
-	if (ret) {
-		dev_err(dev, "Chip initialization failed: %d\n", ret);
-		return ret;
-	}
+	if (ret)
+		return dev_err_probe(dev, ret, "Chip initialization failed\n");
 
 	/* Enable runtime PM */
 	pm_runtime_set_autosuspend_delay(dev, 3000);
@@ -375,12 +269,10 @@ int aw88399_hda_probe(struct device *dev, const char *device_name, int id, int i
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 
-	/* Register component */
 	ret = component_add(dev, &aw88399_hda_comp_ops);
 	if (ret) {
-		dev_err(dev, "Failed to register component: %d\n", ret);
 		pm_runtime_disable(dev);
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to register component\n");
 	}
 
 	dev_info(dev, "AW88399 HDA side codec registered successfully\n");
@@ -401,7 +293,7 @@ void aw88399_hda_remove(struct device *dev)
 	component_del(dev, &aw88399_hda_comp_ops);
 	kfree(aw88399->acpi_subsystem_id);
 
-	dev_info(dev, "AW88399 HDA side codec removed\n");
+	dev_dbg(aw88399->dev, "AW88399 HDA side codec removed\n");
 }
 EXPORT_SYMBOL_NS_GPL(aw88399_hda_remove, "SND_HDA_SCODEC_AW88399");
 
@@ -409,12 +301,10 @@ static int aw88399_hda_runtime_suspend(struct device *dev)
 {
 	struct aw88399_hda *aw88399 = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "Runtime suspend\n");
+	dev_dbg(aw88399->dev, "Runtime suspend\n");
 
 	if (aw88399->aw_dev && aw88399->playing)
 		aw88399_stop(aw88399->aw_dev);
-
-	aw88399->suspended = true;
 
 	return 0;
 }
@@ -423,9 +313,7 @@ static int aw88399_hda_runtime_resume(struct device *dev)
 {
 	struct aw88399_hda *aw88399 = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "Runtime resume\n");
-
-	aw88399->suspended = false;
+	dev_dbg(aw88399->dev, "Runtime resume\n");
 
 	if (aw88399->core && aw88399->aw_dev && aw88399->playing)
 		aw88399_start(aw88399->core, AW88399_SYNC_START);
@@ -438,7 +326,7 @@ static int aw88399_hda_system_suspend(struct device *dev)
 	struct aw88399_hda *aw88399 = dev_get_drvdata(dev);
 	int ret;
 
-	dev_dbg(dev, "System suspend\n");
+	dev_dbg(aw88399->dev, "System suspend\n");
 
 	if (aw88399->aw_dev && aw88399->playing)
 		aw88399_stop(aw88399->aw_dev);
@@ -448,7 +336,7 @@ static int aw88399_hda_system_suspend(struct device *dev)
 
 	ret = pm_runtime_force_suspend(dev);
 	if (ret)
-		dev_err(dev, "Runtime force suspend failed: %d\n", ret);
+		dev_err(aw88399->dev, "Runtime force suspend failed: %d\n", ret);
 
 	return ret;
 }
@@ -458,14 +346,14 @@ static int aw88399_hda_system_resume(struct device *dev)
 	struct aw88399_hda *aw88399 = dev_get_drvdata(dev);
 	int ret;
 
-	dev_dbg(dev, "System resume\n");
+	dev_dbg(aw88399->dev, "System resume\n");
 
 	if (aw88399->aw_dev)
-		aw88399_hda_hw_reset(aw88399);
+		aw88399_hw_reset(aw88399->core);
 
 	ret = pm_runtime_force_resume(dev);
 	if (ret)
-		dev_err(dev, "Runtime force resume failed: %d\n", ret);
+		dev_err(aw88399->dev, "Runtime force resume failed: %d\n", ret);
 
 	return ret;
 }
@@ -478,5 +366,6 @@ EXPORT_SYMBOL_NS_GPL(aw88399_hda_pm_ops, "SND_HDA_SCODEC_AW88399");
 
 MODULE_DESCRIPTION("AW88399 HDA driver");
 MODULE_AUTHOR("Yakov Till <yakov.till@gmail.com>");
+MODULE_AUTHOR("Marco Giunta <marco_giunta@outlook.it>");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE("aw88399_acf.bin");

@@ -28,9 +28,6 @@ config SND_HDA_SCODEC_AW88399_I2C
 	  Say Y or M here to include AW88399 I2C HD-audio side codec support
 	  in snd-hda-intel driver, such as ALC287.
 
-	  This is for systems where the AW88399 smart amplifier is connected
-	  as a side codec to the HDA controller, rather than via SOF/SSP.
-
 comment "Set to Y if you want auto-loading the side codec driver"
 	depends on SND_HDA=y && SND_HDA_SCODEC_AW88399_I2C=m
 

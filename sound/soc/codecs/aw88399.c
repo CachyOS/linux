@@ -10,21 +10,11 @@
 #include <linux/crc32.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
-#include <linux/firmware.h>
-#include <linux/minmax.h>
 #include <linux/regmap.h>
 #include <linux/sort.h>
 #include <sound/soc.h>
 #include "aw88399.h"
 #include "aw88395/aw88395_device.h"
-
-static const struct regmap_config aw88399_remap_config = {
-	.val_bits = 16,
-	.reg_bits = 8,
-	.max_register = AW88399_REG_MAX,
-	.reg_format_endian = REGMAP_ENDIAN_LITTLE,
-	.val_format_endian = REGMAP_ENDIAN_BIG,
-};
 
 static struct snd_soc_dai_driver aw88399_dai[] = {
 	{
@@ -764,18 +754,6 @@ static const struct snd_soc_component_driver soc_codec_dev_aw88399 = {
 	.controls = aw88399_controls,
 	.num_controls = ARRAY_SIZE(aw88399_controls),
 };
-
-static void aw88399_hw_reset(struct aw88399 *aw88399)
-{
-	if (aw88399->reset_gpio) {
-		gpiod_set_value_cansleep(aw88399->reset_gpio, 1);
-		usleep_range(AW88399_1000_US, AW88399_1000_US + 10);
-		gpiod_set_value_cansleep(aw88399->reset_gpio, 0);
-		usleep_range(AW88399_1000_US, AW88399_1000_US + 10);
-		gpiod_set_value_cansleep(aw88399->reset_gpio, 1);
-		usleep_range(AW88399_1000_US, AW88399_1000_US + 10);
-	}
-}
 
 static int aw88399_i2c_probe(struct i2c_client *i2c)
 {

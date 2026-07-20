@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/*
- * aw88399-lib.c --  AW88399 Common functions for ASoC and HDA audio drivers
- * Copyright (c) 2023 AWINIC Technology CO., LTD
- *
- * Author: Weidong Wang <wangweidong.a@awinic.com>
- */
+//
+// aw88399-lib.c --  AW88399 Common functions for ASoC and HDA audio drivers
+//
+// Copyright (c) 2023 AWINIC Technology CO., LTD
+//
+// Author: Weidong Wang <wangweidong.a@awinic.com>
+//
 
-#include <linux/i2c.h>
 #include <linux/firmware.h>
+#include <linux/gpio/consumer.h>
+#include <linux/i2c.h>
 #include <linux/minmax.h>
 #include <linux/regmap.h>
 #include <sound/soc.h>
 #include <sound/aw88399.h>
 #include "aw88395/aw88395_device.h"
+
+const struct regmap_config aw88399_remap_config = {
+	.val_bits = 16,
+	.reg_bits = 8,
+	.max_register = AW88399_REG_MAX,
+	.reg_format_endian = REGMAP_ENDIAN_LITTLE,
+	.val_format_endian = REGMAP_ENDIAN_BIG,
+};
+EXPORT_SYMBOL_GPL(aw88399_remap_config);
 
 static void aw_dev_pwd(struct aw_device *aw_dev, bool pwd)
 {
@@ -845,14 +856,9 @@ static int aw_dev_dsp_update_fw(struct aw_device *aw_dev,
 static int aw_dev_check_sram(struct aw_device *aw_dev)
 {
 	unsigned int reg_val;
-	int ret;
 
 	/* read dsp_rom_check_reg */
-	ret = aw_dev_dsp_read(aw_dev, AW88399_DSP_ROM_CHECK_ADDR, &reg_val, AW_DSP_16_DATA);
-	if (ret) {
-		dev_err(aw_dev->dev, "failed to read dsp rom check reg: %d", ret);
-		return ret;
-	}
+	aw_dev_dsp_read(aw_dev, AW88399_DSP_ROM_CHECK_ADDR, &reg_val, AW_DSP_16_DATA);
 	if (reg_val != AW88399_DSP_ROM_CHECK_DATA) {
 		dev_err(aw_dev->dev, "check dsp rom failed, read[0x%x] != check[0x%x]",
 						reg_val, AW88399_DSP_ROM_CHECK_DATA);
@@ -860,17 +866,9 @@ static int aw_dev_check_sram(struct aw_device *aw_dev)
 	}
 
 	/* check dsp_cfg_base_addr */
-	ret = aw_dev_dsp_write(aw_dev, AW88399_DSP_CFG_ADDR,
+	aw_dev_dsp_write(aw_dev, AW88399_DSP_CFG_ADDR,
 				AW88399_DSP_ODD_NUM_BIT_TEST, AW_DSP_16_DATA);
-	if (ret) {
-		dev_err(aw_dev->dev, "failed to write dsp cfg test pattern: %d", ret);
-		return ret;
-	}
-	ret = aw_dev_dsp_read(aw_dev, AW88399_DSP_CFG_ADDR, &reg_val, AW_DSP_16_DATA);
-	if (ret) {
-		dev_err(aw_dev->dev, "failed to read dsp cfg test pattern: %d", ret);
-		return ret;
-	}
+	aw_dev_dsp_read(aw_dev, AW88399_DSP_CFG_ADDR, &reg_val, AW_DSP_16_DATA);
 	if (reg_val != AW88399_DSP_ODD_NUM_BIT_TEST) {
 		dev_err(aw_dev->dev, "check dsp cfg failed, read[0x%x] != write[0x%x]",
 						reg_val, AW88399_DSP_ODD_NUM_BIT_TEST);
@@ -1325,6 +1323,19 @@ int aw88399_request_firmware_file(struct aw88399 *aw88399)
 }
 EXPORT_SYMBOL_GPL(aw88399_request_firmware_file);
 
+void aw88399_hw_reset(struct aw88399 *aw88399)
+{
+	if (aw88399->reset_gpio) {
+		gpiod_set_value_cansleep(aw88399->reset_gpio, 1);
+		usleep_range(AW88399_1000_US, AW88399_1000_US + 10);
+		gpiod_set_value_cansleep(aw88399->reset_gpio, 0);
+		usleep_range(AW88399_1000_US, AW88399_1000_US + 10);
+		gpiod_set_value_cansleep(aw88399->reset_gpio, 1);
+		usleep_range(AW88399_1000_US, AW88399_1000_US + 10);
+	}
+}
+EXPORT_SYMBOL_GPL(aw88399_hw_reset);
+
 static void aw88399_parse_channel_dt(struct aw_device *aw_dev)
 {
 	struct device_node *np = aw_dev->dev->of_node;
@@ -1338,13 +1349,12 @@ static void aw88399_parse_channel_dt(struct aw_device *aw_dev)
 		 * from I2C address: 0x34 -> channel 0 (left), 0x35 -> channel 1 (right)
 		 */
 		aw_dev->channel = aw_dev->i2c->addr - 0x34;
-		dev_info(aw_dev->dev,
+		dev_dbg(aw_dev->dev,
 			"DT channel property not found, using I2C address-based channel %d (addr 0x%02x)\n",
 			aw_dev->channel, aw_dev->i2c->addr);
 		return;
 	}
 	aw_dev->channel = channel_value;
-	dev_dbg(aw_dev->dev, "DT channel value: %d\n", channel_value);
 }
 
 int aw88399_init(struct aw88399 *aw88399, struct i2c_client *i2c, struct regmap *regmap)
@@ -1390,6 +1400,12 @@ int aw88399_init(struct aw88399 *aw88399, struct i2c_client *i2c, struct regmap 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(aw88399_init);
+
+void aw88399_dev_set_channel(struct aw88399 *aw88399, int channel)
+{
+	aw88399->aw_pa->channel = channel;
+}
+EXPORT_SYMBOL_GPL(aw88399_dev_set_channel);
 
 MODULE_DESCRIPTION("AW88399 common device library");
 MODULE_LICENSE("GPL");
