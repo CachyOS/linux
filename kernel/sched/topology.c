@@ -2722,6 +2722,9 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 			sd->shared = *per_cpu_ptr(d.sds, sd_id);
 			atomic_set(&sd->shared->nr_busy_cpus, sd->span_weight);
 			atomic_inc(&sd->shared->ref);
+#ifdef CONFIG_SCHED_POC_SELECTOR
+			poc_sd_shared_init(sd, sd_id);
+#endif
 
 			/*
 			 * In presence of higher domains, adjust the

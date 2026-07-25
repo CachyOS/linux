@@ -215,6 +215,10 @@ config THREAD_INFO_IN_TASK
 
 menu "General setup"
 
+config CACHY
+	bool "Kernel tweaks by CachyOS"
+	default y
+
 config BROKEN
 	bool
 	help
@@ -1478,6 +1482,19 @@ config SCHED_AUTOGROUP
 	  desktop applications.  Task group autogeneration is currently based
 	  upon task session.
 
+config SCHED_POC_SELECTOR
+	bool "Piece-Of-Cake Fast Idle CPU Selector"
+	depends on SMP
+	default y
+	help
+	  Idle CPU selector using cached bitmasks inspired by the scx_cake BPF
+	  scheduler. Reduces select_idle_cpu overhead by using bitmap scanning.
+
+	  This optimization does not affect scheduler fairness - it only
+	  speeds up the process of finding an idle CPU for task wakeup.
+
+	  If unsure, say Y.
+
 config RELAY
 	bool "Kernel->user space relay support (formerly relayfs)"
 	select IRQ_WORK
@@ -1601,6 +1618,12 @@ config CC_OPTIMIZE_FOR_PERFORMANCE
 	  This is the default optimization level for the kernel, building
 	  with the "-O2" compiler flag for best performance and most
 	  helpful compile-time warnings.
+
+config CC_OPTIMIZE_FOR_PERFORMANCE_O3
+	bool "Optimize more for performance (-O3)"
+	help
+	  Choosing this option will pass "-O3" to your compiler to optimize
+	  the kernel yet more for performance.
 
 config CC_OPTIMIZE_FOR_SIZE
 	bool "Optimize for size (-Os)"
