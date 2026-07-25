@@ -1029,6 +1029,7 @@ static void init_amd_zen4(struct cpuinfo_x86 *c)
 	}
 }
 
+#ifndef CONFIG_CACHY
 static const struct x86_cpu_id zen5_rdseed_microcode[] = {
 	ZEN_MODEL_STEP_UCODE(0x1a, 0x02, 0x1, 0x0b00215a),
 	ZEN_MODEL_STEP_UCODE(0x1a, 0x08, 0x1, 0x0b008121),
@@ -1050,6 +1051,11 @@ static void init_amd_zen5(struct cpuinfo_x86 *c)
 		pr_emerg_once("RDSEED32 is broken. Disabling the corresponding CPUID bit.\n");
 	}
 }
+#else
+static void init_amd_zen5(struct cpuinfo_x86 *c)
+{
+}
+#endif /* !CONFIG_CACHY */
 
 static void init_amd(struct cpuinfo_x86 *c)
 {
