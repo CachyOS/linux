@@ -262,16 +262,18 @@ static int msr_update_perf(struct cpufreq_policy *policy, u8 min_perf,
 	if (value == prev)
 		return 0;
 
+	WRITE_ONCE(cpudata->cppc_req_cached, value);
+
 	if (fast_switch) {
 		wrmsrq(MSR_AMD_CPPC_REQ, value);
 	} else {
 		int ret = wrmsrq_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, value);
 
-		if (ret)
+		if (ret) {
+			WRITE_ONCE(cpudata->cppc_req_cached, prev);
 			return ret;
+		}
 	}
-
-	WRITE_ONCE(cpudata->cppc_req_cached, value);
 
 	return 0;
 }
@@ -312,16 +314,16 @@ static int msr_set_epp(struct cpufreq_policy *policy, u8 epp)
 	if (value == prev)
 		return 0;
 
+	WRITE_ONCE(cpudata->cppc_req_cached, value);
+
 	ret = wrmsrq_on_cpu(cpudata->cpu, MSR_AMD_CPPC_REQ, value);
 	if (ret) {
+		WRITE_ONCE(cpudata->cppc_req_cached, prev);
 		pr_err("failed to set energy perf value (%d)\n", ret);
 		return ret;
 	}
 
-	/* update both so that msr_update_perf() can effectively check */
-	WRITE_ONCE(cpudata->cppc_req_cached, value);
-
-	return ret;
+	return 0;
 }
 
 DEFINE_STATIC_CALL(amd_pstate_set_epp, msr_set_epp);
