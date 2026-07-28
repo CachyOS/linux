@@ -37,7 +37,7 @@
 #define SCHED_POC_SELECTOR_AUTHOR   "Masahito Suzuki"
 #define SCHED_POC_SELECTOR_PROGNAME "Piece-Of-Cake (POC) CPU Selector"
 
-#define SCHED_POC_SELECTOR_VERSION  "2.6.2"
+#define SCHED_POC_SELECTOR_VERSION  "2.6.3"
 
 /**************************************************************
  * Static keys:
@@ -824,6 +824,8 @@ static __always_inline u64 poc_smt_sibling_mask(int bit,
 		u8 shift = sd_share->poc_smt_shift;
 		int sib = (sd_share->poc_primary_mask & (1ULL << bit))
 				? bit + shift : bit - shift;
+		if (unlikely(sib < 0 || sib >= 64))
+			return 1ULL << bit;
 		return (1ULL << bit) | (1ULL << sib);
 	}
 
