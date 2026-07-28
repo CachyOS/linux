@@ -10,6 +10,7 @@
 
 #include <linux/pm_qos.h>
 #include <linux/platform_profile.h>
+#include <linux/sched/cpufreq.h>
 
 /*********************************************************************
  *                        AMD P-state INTERFACE                       *
@@ -96,6 +97,12 @@ struct amd_aperf_mperf {
  * @current_profile: Currently selected platform profile option
  * @ppdev: Device registered with the platform profile handler
  * @profile_name: Name under which @ppdev is registered
+ * @epp_boost_update_util: update-util hook for the per-core EPP boost
+ * @epp_boost_last_sample: last C0-residency sample time (ns; 0 means the
+ *			   next callback only re-baselines the counters)
+ * @epp_boost_last_busy: last time the CPU sampled as busy (ns)
+ * @epp_boost_active: EPP boost currently applied to MSR_AMD_CPPC_REQ
+ * @epp_boost_registered: update-util hook currently registered
  *
  * The amd_cpudata is key private data for each CPU thread in AMD P-State, and
  * represents all the attributes and goals that AMD P-State requests at runtime.
@@ -139,6 +146,13 @@ struct amd_cpudata {
 	enum platform_profile_option current_profile;
 	struct device *ppdev;
 	char *profile_name;
+
+	/* per-core EPP boost (active mode, MSR systems only) */
+	struct	update_util_data epp_boost_update_util;
+	u64	epp_boost_last_sample;
+	u64	epp_boost_last_busy;
+	bool	epp_boost_active;
+	bool	epp_boost_registered;
 };
 
 /*
