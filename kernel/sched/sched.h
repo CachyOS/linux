@@ -2468,15 +2468,21 @@ static __always_inline u64 poc_cpumask_to_u64(const struct cpumask *mask,
 {
 	int base = sd_share->poc_cpu_base;
 	int base_word = base >> 6;
+	int shift = sd_share->poc_affinity_shift;
 
-	if (static_branch_likely(&sched_poc_aligned)) {
-		/* Fast path: no shift needed (base is 64-aligned) */
+	if (likely(shift == 0)) {
+		/*
+		 * Fast path: this LLC's own base is 64-aligned, so no
+		 * cross-word shift is needed here even if some other LLC
+		 * in the system is misaligned (sched_poc_aligned is a
+		 * single system-wide flag and must not gate this branch).
+		 */
 		return cpumask_bits(mask)[base_word];
 	} else {
 		/* Slow path: shift required (e.g., Threadripper) */
-		int shift = sd_share->poc_affinity_shift;
 		u64 lo = cpumask_bits(mask)[base_word];
-		u64 hi = cpumask_bits(mask)[base_word + 1];
+		u64 hi = (base_word + 1 < BITS_TO_LONGS(nr_cpumask_bits)) ?
+			 cpumask_bits(mask)[base_word + 1] : 0;
 		return (lo >> shift) | (hi << (64 - shift));
 	}
 }
