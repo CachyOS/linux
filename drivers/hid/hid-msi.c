@@ -1846,7 +1846,7 @@ static int claw_probe(struct hid_device *hdev, u8 ep)
 		dev_dbg(&hdev->dev, "M-Key mapping is not supported. Update firmware to enable.\n");
 
 	/* Device is hardwired and name is guaranteed to be unique */
-	drvdata->led_mc.led_cdev.name = "msi_claw:rgb:joystick_rings";
+	drvdata->led_mc.led_cdev.name = "go:rgb:joystick_rings";
 	drvdata->led_mc.led_cdev.brightness = 0x50;
 	drvdata->led_mc.led_cdev.max_brightness = 0x64;
 	drvdata->led_mc.led_cdev.color = LED_COLOR_ID_RGB;
