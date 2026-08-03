@@ -7087,6 +7087,11 @@ static void fill_stream_properties_from_drm_display_mode(
 
 	stream->output_color_space = get_output_color_space(timing_out, connector_state);
 	stream->content_type = get_output_content_type(connector_state);
+
+	/* DisplayID Type VII pass-through timings. */
+	if (mode_in->dsc_passthrough_timings_support && info->dp_dsc_bpp_x16 != 0) {
+		stream->timing.dsc_fixed_bits_per_pixel_x16 = info->dp_dsc_bpp_x16;
+	}
 }
 
 static void fill_audio_info(struct audio_info *audio_info,
@@ -7607,6 +7612,7 @@ create_stream_for_sink(struct drm_connector *connector,
 	struct drm_display_mode mode;
 	struct drm_display_mode saved_mode;
 	struct drm_display_mode *freesync_mode = NULL;
+	struct drm_display_mode *dsc_passthru_mode = NULL;
 	bool native_mode_found = false;
 	bool recalculate_timing = false;
 	bool scale = dm_state->scaling != RMX_OFF;
@@ -7695,6 +7701,16 @@ create_stream_for_sink(struct drm_connector *connector,
 					&mode, preferred_mode, scale);
 
 			preferred_refresh = drm_mode_vrefresh(preferred_mode);
+		}
+	}
+
+	list_for_each_entry(dsc_passthru_mode, &connector->modes, head) {
+		if (dsc_passthru_mode->hdisplay == mode.hdisplay &&
+		    dsc_passthru_mode->vdisplay == mode.vdisplay &&
+		    drm_mode_vrefresh(dsc_passthru_mode) == mode_refresh) {
+			mode.dsc_passthrough_timings_support =
+				dsc_passthru_mode->dsc_passthrough_timings_support;
+			break;
 		}
 	}
 
