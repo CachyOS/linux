@@ -4359,6 +4359,10 @@ static int amdgpu_device_evict_resources(struct amdgpu_device *adev)
 	if (system_state == SYSTEM_POWER_OFF)
 		return 0;
 
+	/* No need to evict when going to S5 through S4 callbacks */
+	if (system_state == SYSTEM_HALT || system_state == SYSTEM_POWER_OFF)
+		return 0;
+
 	ret = amdgpu_ttm_evict_resources(adev, TTM_PL_VRAM);
 	if (ret) {
 		dev_warn(adev->dev, "evicting device resources failed\n");
