@@ -271,6 +271,17 @@ static struct msi_wmi_platform_quirk quirk_gen3 = {
 	.pl3_min = 10,
 	.pl3_max = 48,
 };
+static struct msi_wmi_platform_quirk quirk_gen4 = {
+	.shift_mode = true,
+	.charge_threshold = true,
+	.dual_fans = true,
+	.restore_curves = true,
+	.custom_shift = MSI_PLATFORM_SHIFT_MANUAL,
+	.pl1_min = 8,
+	.pl1_max = 35,
+	.pl2_min = 9,
+	.pl2_max = 45,
+};
 
 static const struct dmi_system_id msi_quirks[] = {
 	{
@@ -304,6 +315,14 @@ static const struct dmi_system_id msi_quirks[] = {
 			DMI_MATCH(DMI_BOARD_NAME, "MS-1T8K"),
 		},
 		.driver_data = &quirk_gen3,
+	},
+	{
+		.ident = "MSI Claw 8 EX AI+ CG3EM",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd."),
+			DMI_MATCH(DMI_BOARD_NAME, "MS-1T91"),
+		},
+		.driver_data = &quirk_gen4,
 	},
 	{ }
 };
@@ -805,10 +824,16 @@ static const struct hwmon_chip_info msi_wmi_platform_chip_info_dual = {
 
 static int msi_wmi_platform_profile_probe(void *drvdata, unsigned long *choices)
 {
+	struct msi_wmi_platform_data *data = drvdata;
+
 	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
 	set_bit(PLATFORM_PROFILE_BALANCED, choices);
 	set_bit(PLATFORM_PROFILE_BALANCED_PERFORMANCE, choices);
 	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
+
+	if (data->quirks->custom_shift)
+		set_bit(PLATFORM_PROFILE_CUSTOM, choices);
+
 	return 0;
 }
 
@@ -816,6 +841,7 @@ static int msi_wmi_platform_profile_get(struct device *dev,
 					enum platform_profile_option *profile)
 {
 	struct msi_wmi_platform_data *data = dev_get_drvdata(dev);
+	u8 custom = data->quirks->custom_shift;
 	int ret;
 
 	u8 buffer[32] = { };
@@ -829,6 +855,11 @@ static int msi_wmi_platform_profile_get(struct device *dev,
 	if (buffer[0] != 1)
 		return -EINVAL;
 
+	if (custom && buffer[1] == custom) {
+		*profile = PLATFORM_PROFILE_CUSTOM;
+		return 0;
+	}
+
 	switch (buffer[1]) {
 	case MSI_PLATFORM_SHIFT_SPORT:
 		*profile = PLATFORM_PROFILE_PERFORMANCE;
@@ -841,9 +872,6 @@ static int msi_wmi_platform_profile_get(struct device *dev,
 		return 0;
 	case MSI_PLATFORM_SHIFT_ECO:
 		*profile = PLATFORM_PROFILE_LOW_POWER;
-		return 0;
-	case MSI_PLATFORM_SHIFT_USER:
-		*profile = PLATFORM_PROFILE_CUSTOM;
 		return 0;
 	default:
 		return -EINVAL;
@@ -872,7 +900,9 @@ static int msi_wmi_platform_profile_set(struct device *dev,
 		buffer[1] = MSI_PLATFORM_SHIFT_ECO;
 		break;
 	case PLATFORM_PROFILE_CUSTOM:
-		buffer[1] = MSI_PLATFORM_SHIFT_USER;
+		if (!data->quirks->custom_shift)
+			return -EINVAL;
+		buffer[1] = data->quirks->custom_shift;
 		break;
 	default:
 		return -EINVAL;
