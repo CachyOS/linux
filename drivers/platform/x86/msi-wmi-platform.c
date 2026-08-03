@@ -675,11 +675,11 @@ static int msi_wmi_platform_write(struct device *dev, enum hwmon_sensor_types ty
 	u8 buffer[32] = { };
 	int ret;
 
+	guard(mutex)(&data->wmi_lock);
 	switch (type) {
 	case hwmon_pwm:
 		switch (attr) {
 		case hwmon_pwm_enable:
-			guard(mutex)(&data->wmi_lock);
 
 			buffer[0] = MSI_PLATFORM_AP_SUBFEATURE_FAN_MODE;
 			ret = msi_wmi_platform_query_unlocked(
