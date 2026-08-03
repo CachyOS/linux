@@ -1195,9 +1195,6 @@ static int pci_pm_poweroff(struct device *dev)
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 
-	if (device_may_wakeup(dev) && system_state == SYSTEM_POWER_OFF)
-		device_set_wakeup_enable(dev, false);
-
 	pci_dev->skip_bus_pm = false;
 
 	if (pci_has_legacy_pm_support(pci_dev))
