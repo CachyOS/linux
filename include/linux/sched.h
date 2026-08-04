@@ -575,6 +575,7 @@ struct sched_statistics {
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
+	struct load_weight		h_load;
 	struct rb_node			run_node;
 	u64				deadline;
 	u64				min_vruntime;
