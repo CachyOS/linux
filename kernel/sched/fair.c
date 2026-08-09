@@ -10866,10 +10866,24 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 			continue;
 
 		if (sd_flags & SD_ASYM_CPUCAPACITY) {
-			/* Check for a misfit task on the cpu */
-			if (sgs->group_misfit_task_load < rq->misfit_task_load) {
-				sgs->group_misfit_task_load = rq->misfit_task_load;
+			if (rq->misfit_task_load) {
+				/*
+				 * Always mark the domain overloaded so big CPUs
+				 * can pick up misfit tasks via newly idle
+				 * balance.
+				 */
 				*sg_overloaded = 1;
+
+				/*
+				 * Only account misfit load if @dst_cpu can
+				 * help; otherwise, the group may be classified
+				 * as misfit_task and update_sd_pick_busiest()
+				 * will skip it.
+				 */
+				if (capacity_greater(capacity_of(env->dst_cpu),
+						     group->sgc->max_capacity) &&
+				    (sgs->group_misfit_task_load < rq->misfit_task_load))
+					sgs->group_misfit_task_load = rq->misfit_task_load;
 			}
 		} else if (env->idle && sched_reduced_capacity(rq, env->sd)) {
 			/* Check for a task running on a CPU with reduced capacity */
@@ -10933,6 +10947,20 @@ static bool update_sd_pick_busiest(struct lb_env *env,
 	    (sgs->group_type == group_misfit_task) &&
 	    (!capacity_greater(capacity_of(env->dst_cpu), sg->sgc->max_capacity) ||
 	     sds->local_stat.group_type != group_has_spare))
+		return false;
+
+	/*
+	 * Candidate sg has no more than one task per CPU and has higher
+	 * per-CPU capacity. Migrating tasks to less capable CPUs may harm
+	 * throughput. Maximize throughput, power/energy consequences are not
+	 * considered.
+	 *
+	 * Systems with SMT are unaffected, as asymmetric capacity is not set
+	 * in such cases.
+	 */
+	if ((env->sd->flags & SD_ASYM_CPUCAPACITY) &&
+	    (sgs->group_type <= group_fully_busy) &&
+	    (capacity_greater(sg->sgc->min_capacity, capacity_of(env->dst_cpu))))
 		return false;
 
 	if (sgs->group_type > busiest->group_type)
@@ -11036,17 +11064,6 @@ has_spare:
 
 		break;
 	}
-
-	/*
-	 * Candidate sg has no more than one task per CPU and has higher
-	 * per-CPU capacity. Migrating tasks to less capable CPUs may harm
-	 * throughput. Maximize throughput, power/energy consequences are not
-	 * considered.
-	 */
-	if ((env->sd->flags & SD_ASYM_CPUCAPACITY) &&
-	    (sgs->group_type <= group_fully_busy) &&
-	    (capacity_greater(sg->sgc->min_capacity, capacity_of(env->dst_cpu))))
-		return false;
 
 	return true;
 }
@@ -11946,8 +11963,14 @@ static struct rq *sched_balance_find_src_rq(struct lb_env *env,
 		 * eventually lead to active_balancing high->low capacity.
 		 * Higher per-CPU capacity is considered better than balancing
 		 * average load.
+		 *
+		 * CONFIG_SCHED_CLUSTER requires balancing load across clusters
+		 * of identical capacity. Use architectural capacity to ignore
+		 * runtime variability.
 		 */
 		if (env->sd->flags & SD_ASYM_CPUCAPACITY &&
+		    (!static_branch_unlikely(&sched_cluster_active) ||
+		     arch_scale_cpu_capacity(env->dst_cpu) != arch_scale_cpu_capacity(i)) &&
 		    !capacity_greater(capacity_of(env->dst_cpu), capacity) &&
 		    nr_running == 1)
 			continue;
