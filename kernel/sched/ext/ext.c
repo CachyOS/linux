@@ -6236,6 +6236,9 @@ static void scx_root_disable(struct scx_sched *sch)
 	mutex_unlock(&scx_enable_mutex);
 
 	WARN_ON_ONCE(scx_set_enable_state(SCX_DISABLED) != SCX_DISABLING);
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	poc_notify_scx(false);
+#endif
 done:
 	scx_bypass(sch, false);
 }
@@ -7449,6 +7452,10 @@ static void scx_root_enable_workfn(struct kthread_work *work)
 			dl_server_detach_bw(&rq->fair_server);
 		}
 	}
+
+#ifdef CONFIG_SCHED_POC_SELECTOR
+	poc_notify_scx(true);
+#endif
 
 	pr_info("sched_ext: BPF scheduler \"%s\" enabled%s\n",
 		sch->ops.name, scx_switched_all() ? "" : " (partial)");
