@@ -435,6 +435,7 @@ static void t2audio_init_dev(struct t2audio_device *a, t2audio_device_id_t dev_i
         dev_err(a->dev, "Failed to get device uid for device %llx\n", dev_id);
         goto fail;
     }
+    uid[uid_len] = '\0';
     pr_debug("t2bce_audio: Remote device %llx %.*s\n", dev_id, (int) uid_len, uid);
 
     sdev->a = a;
