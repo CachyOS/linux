@@ -1080,4 +1080,20 @@ static void quirk_tuxeo_rp_d3(struct pci_dev *pdev)
 	}
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AMD, 0x1502, quirk_tuxeo_rp_d3);
+
+/*
+ * MSI Claw A8 firmware initializes the onboard Realtek RTS525A cardreader
+ * with an MSI-specific Subsystem Vendor and Device ID on boot, but neglects
+ * to re-initialize it on resume.  Avoid hot-removal of the cardreader due to
+ * the spurious ID change.
+ */
+static void quirk_msi_claw_cardreader(struct pci_dev *pdev)
+{
+	if (pdev->subsystem_vendor == 0x1462 &&
+	    pdev->subsystem_device == 0x14af) {
+		pdev->subsystem_vendor = pdev->vendor;
+		pdev->subsystem_device = pdev->device;
+	}
+}
+DECLARE_PCI_FIXUP_SUSPEND_LATE(PCI_VENDOR_ID_REALTEK, 0x525a, quirk_msi_claw_cardreader);
 #endif /* CONFIG_SUSPEND */
