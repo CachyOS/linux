@@ -2977,8 +2977,11 @@ static int mmc_blk_alloc_parts(struct mmc_card *card, struct mmc_blk_data *md)
 	return 0;
 }
 
-static void mmc_blk_remove_req(struct mmc_blk_data *md)
+static void mmc_blk_remove_req(struct mmc_card *card, struct mmc_blk_data *md)
 {
+	if (mmc_card_removed(card))
+		blk_mark_disk_dead(md->disk);
+
 	/*
 	 * Flush remaining requests and free queues. It is freeing the queue
 	 * that stops new requests from being accepted.
@@ -3005,7 +3008,7 @@ static void mmc_blk_remove_parts(struct mmc_card *card,
 	list_for_each_safe(pos, q, &md->part) {
 		part_md = list_entry(pos, struct mmc_blk_data, part);
 		list_del(pos);
-		mmc_blk_remove_req(part_md);
+		mmc_blk_remove_req(card, part_md);
 	}
 }
 
@@ -3251,7 +3254,7 @@ static int mmc_blk_probe(struct mmc_card *card)
 
 out:
 	mmc_blk_remove_parts(card, md);
-	mmc_blk_remove_req(md);
+	mmc_blk_remove_req(card, md);
 out_free:
 	destroy_workqueue(card->complete_wq);
 	return ret;
@@ -3272,7 +3275,7 @@ static void mmc_blk_remove(struct mmc_card *card)
 	if (!mmc_card_sd_combo(card))
 		pm_runtime_disable(&card->dev);
 	pm_runtime_put_noidle(&card->dev);
-	mmc_blk_remove_req(md);
+	mmc_blk_remove_req(card, md);
 	destroy_workqueue(card->complete_wq);
 }
 

@@ -22,6 +22,7 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/slot-gpio.h>
 
+#include "card.h"
 #include "core.h"
 #include "crypto.h"
 #include "host.h"
@@ -703,3 +704,17 @@ void mmc_free_host(struct mmc_host *host)
 }
 
 EXPORT_SYMBOL(mmc_free_host);
+
+/**
+ *	mmc_host_set_removed - declare host removed
+ *	@host: mmc host
+ *
+ *	Declare the host (and any inserted card) removed and inaccessible.
+ */
+void mmc_host_set_removed(struct mmc_host *host)
+{
+	if (host->card)
+		mmc_card_set_removed(host->card);
+}
+
+EXPORT_SYMBOL(mmc_host_set_removed);
