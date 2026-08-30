@@ -1699,6 +1699,9 @@ static int magicmouse_reset_resume(struct hid_device *hdev)
 {
 	struct magicmouse_sc *msc = hid_get_drvdata(hdev);
 
+	if (hdev->bus == BUS_SPI)
+		return magicmouse_enable_multitouch(hdev);
+
 	/* The device drops out of multitouch mode on resume; re-send the
 	 * enable report.  Only the HID_TYPE_USBMOUSE interface accepts it, and
 	 * it must be deferred. Sending it inline here is too early.
@@ -1780,20 +1783,10 @@ static const struct hid_device_id magic_mice[] = {
 	{ HID_SPI_DEVICE(SPI_VENDOR_ID_APPLE, HID_ANY_ID),
 	  .driver_data = 0 },
 	{ HID_DEVICE(BUS_HOST, HID_GROUP_ANY, HOST_VENDOR_ID_APPLE,
-                     HID_ANY_ID), .driver_data = 0 },
+		     HID_ANY_ID), .driver_data = 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(hid, magic_mice);
-
-#ifdef CONFIG_PM
-static int magicmouse_reset_resume(struct hid_device *hdev)
-{
-	if (hdev->bus == BUS_SPI)
-		return magicmouse_enable_multitouch(hdev);
-
-	return 0;
-}
-#endif
 
 static struct hid_driver magicmouse_driver = {
 	.name = "magicmouse",
