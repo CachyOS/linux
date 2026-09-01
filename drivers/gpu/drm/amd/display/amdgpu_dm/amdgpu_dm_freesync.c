@@ -138,6 +138,12 @@ void amdgpu_dm_get_freesync_config_for_crtc(
 		config.vsif_supported = true;
 		config.btr = true;
 
+		if (new_con_state->freesync_on_desktop_capable)
+			new_crtc_state->stream->freesync_on_desktop =
+				!new_crtc_state->base.passive_vrr_disabled;
+		else
+			new_crtc_state->stream->freesync_on_desktop = false;
+
 		if (fs_vid_mode) {
 			config.state = VRR_STATE_ACTIVE_FIXED;
 			config.fixed_refresh_in_uhz = new_crtc_state->freesync_config.fixed_refresh_in_uhz;
@@ -149,6 +155,7 @@ void amdgpu_dm_get_freesync_config_for_crtc(
 		}
 	} else {
 		config.state = VRR_STATE_UNSUPPORTED;
+		new_crtc_state->stream->freesync_on_desktop = false;
 	}
 out:
 	new_crtc_state->freesync_config = config;
