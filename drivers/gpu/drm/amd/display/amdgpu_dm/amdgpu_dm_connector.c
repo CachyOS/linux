@@ -4008,6 +4008,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 
 	if ((sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A ||
 		as_type == FREESYNC_TYPE_PCON_IN_WHITELIST) &&
+		!connector->display_info.hdmi.vrr_cap.supported &&
 		(!sink->edid_caps.freesync_vcp_code ||
 		(sink->edid_caps.freesync_vcp_code && !sink->mccs_caps.freesync_supported)))
 		freesync_capable = false;
