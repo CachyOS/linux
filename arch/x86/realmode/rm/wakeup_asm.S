@@ -27,6 +27,7 @@ SYM_DATA_START(wakeup_header)
 	pmode_efer:	.quad	0	/* Saved EFER */
 	pmode_gdt:	.quad	0
 	pmode_misc_en:	.quad	0	/* Saved MISC_ENABLE MSR */
+	pmode_tsc:	.quad	0	/* Saved TSC MSR */
 	pmode_behavior:	.long	0	/* Wakeup behavior flags */
 	realmode_flags:	.long	0
 	real_magic:	.long	0
@@ -101,6 +102,17 @@ SYM_CODE_START(wakeup_start)
 	movl	pmode_misc_en, %eax
 	movl	pmode_misc_en + 4, %edx
 	movl	$MSR_IA32_MISC_ENABLE, %ecx
+	wrmsr
+1:
+
+	/* Restore TSC */
+	movl	pmode_behavior, %edi
+	btl	$WAKEUP_BEHAVIOR_RESTORE_TSC, %edi
+	jnc	1f
+
+	movl    pmode_tsc, %eax
+	movl    pmode_tsc + 4, %edx
+	movl    $MSR_IA32_TSC, %ecx
 	wrmsr
 1:
 
