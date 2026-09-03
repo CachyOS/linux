@@ -625,9 +625,7 @@ struct hid_input {
 enum hid_type {
 	HID_TYPE_OTHER = 0,
 	HID_TYPE_USBMOUSE,
-	HID_TYPE_USBNONE,
-	HID_TYPE_SPI_KEYBOARD,
-	HID_TYPE_SPI_MOUSE,
+	HID_TYPE_USBNONE
 };
 
 enum hid_battery_status {
@@ -823,8 +821,6 @@ struct hid_descriptor {
 	.bus = BUS_BLUETOOTH, .vendor = (ven), .product = (prod)
 #define HID_I2C_DEVICE(ven, prod)				\
 	.bus = BUS_I2C, .vendor = (ven), .product = (prod)
-#define HID_SPI_DEVICE(ven, prod)				\
-	.bus = BUS_SPI, .vendor = (ven), .product = (prod)
 
 #define HID_REPORT_ID(rep) \
 	.report_type = (rep)
