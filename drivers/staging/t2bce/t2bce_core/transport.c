@@ -93,8 +93,6 @@ void t2bce_core_client_put(struct t2bce_core_client *client)
 
     synchronize_srcu(&client->bce->clients_srcu);
 
-    if (client->link)
-        device_link_del(client->link);
     kfree(client);
 }
 EXPORT_SYMBOL_GPL(t2bce_core_client_put);
