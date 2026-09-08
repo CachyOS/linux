@@ -97,6 +97,7 @@ static void frontbuffer_flush(struct intel_display *display,
 	might_sleep();
 	intel_td_flush(display);
 	intel_drrs_flush(display, frontbuffer_bits);
+	intel_psr_panel_replay_exit(display);
 	intel_psr_flush(display, frontbuffer_bits, origin);
 	intel_fbc_flush(display, frontbuffer_bits, origin);
 }
