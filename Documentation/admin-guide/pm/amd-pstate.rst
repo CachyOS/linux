@@ -372,6 +372,22 @@ based on the power source and will not react to user desired power state.
 Attempting to manually write to the ``energy_performance_preference`` sysfs
 file will fail when ``dynamic_epp`` is enabled.
 
+Energy performance preference boosting
+======================================
+On MSR-based systems running in the ``active mode``, the driver can optionally
+bias the energy performance preference of a recently-busy CPU toward
+performance while leaving all other CPUs at the policy value.  C0 residency is
+sampled at most every 10 ms; while a CPU has been at least 50% busy within the
+last 300 ms, the EPP field of its CPPC request is set to ``performance`` (0).
+The policy value is restored once 300 ms pass without a busy sample.
+
+This behavior is disabled by default.  It can be enabled with the module
+parameter ``amd_pstate.epp_boost=1`` on the kernel command line, or at runtime
+by writing ``1`` to ``/sys/module/amd_pstate/parameters/epp_boost``.  The
+mechanism only runs while the parameter is enabled and has no overhead when
+disabled.  It has no effect in the ``passive`` and ``guided`` modes or on
+shared-memory (non-MSR) systems.
+
 ``amd-pstate`` vs ``acpi-cpufreq``
 ======================================
 
