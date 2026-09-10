@@ -388,6 +388,16 @@ config SENSORS_APPLESMC
 	  Say Y here if you have an applicable laptop and want to experience
 	  the awesome power of applesmc.
 
+config SENSORS_APPLESMC_T2
+	tristate "Apple SMC for T2 Macbooks"
+	depends on INPUT && X86
+	select NEW_LEDS
+	select LEDS_CLASS
+	help
+	  Duplicate of the applesmc driver patched of T2 Macbooks. A separate
+	  driver is provided instead of patching the available one because of
+	  incompatibilies with non-T2 Macbooks.
+
 config SENSORS_ARM_SCMI
 	tristate "ARM SCMI Sensors"
 	depends on ARM_SCMI_PROTOCOL
