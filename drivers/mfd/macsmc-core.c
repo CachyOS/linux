@@ -33,6 +33,10 @@ static const struct mfd_cell apple_smc_acpi_rtc[] = {
 	MFD_CELL_NAME("macsmc-rtc"),
 };
 
+static const struct mfd_cell apple_smc_acpi_wdt[] = {
+	MFD_CELL_NAME("macsmc-wdt"),
+};
+
 int apple_smc_read(struct apple_smc *smc, smc_key key, void *buf, size_t size)
 {
 	guard(mutex)(&smc->mutex);
@@ -143,6 +147,13 @@ int apple_smc_probe(struct device *dev, const struct apple_smc_backend_ops *ops,
 		if (apple_smc_key_exists(smc, SMC_KEY(CLKO))) {
 			ret = devm_mfd_add_devices(dev, -1, apple_smc_acpi_rtc,
 				ARRAY_SIZE(apple_smc_acpi_rtc), NULL, 0, NULL);
+			if (ret < 0)
+				return ret;
+		}
+
+		if (apple_smc_key_exists(smc, SMC_KEY(NATJ))) {
+			ret = devm_mfd_add_devices(dev, -1, apple_smc_acpi_wdt,
+				ARRAY_SIZE(apple_smc_acpi_wdt), NULL, 0, NULL);
 			if (ret < 0)
 				return ret;
 		}
