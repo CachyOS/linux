@@ -34,6 +34,8 @@ struct dc_stream_state;
 struct dc_info_packet;
 struct mod_vrr_params;
 
+#define VTEM_BRR_MAX 1023
+
 void set_vsc_packet_colorimetry_data(
 		const struct dc_stream_state *stream,
 		struct dc_info_packet *info_packet,
@@ -47,6 +49,10 @@ void mod_build_vsc_infopacket(const struct dc_stream_state *stream,
 
 void mod_build_hf_vsif_infopacket(const struct dc_stream_state *stream,
 		struct dc_info_packet *info_packet, int ALLMEnabled, int ALLMValue);
+
+void mod_build_vtem_infopacket(const struct dc_stream_state *stream,
+		const struct mod_vrr_params *vrr,
+		struct dc_info_packet *infopacket);
 
 enum adaptive_sync_sdp_version {
 	AS_SDP_VER_0 = 0x0,
