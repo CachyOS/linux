@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "Apple T2 Buffer Copy Engine support"
+
+config T2BCE_DMA
+	tristate
+	help
+	  DMA queue support for the Apple T2 Buffer Copy Engine.
+
+config T2BCE_CORE
+	tristate "Apple T2 Buffer Copy Engine core"
+	depends on X86_64 && PCI
+	select T2BCE_DMA
+	help
+	  Core transport driver for the Buffer Copy Engine in Apple T2 Macs.
+	  It provides the mailbox, DMA queue coordination, power management,
+	  and transport API used by the T2 VHCI and audio drivers.
+
+	  If compiled as a module, it will be called t2bce_core.
+
+config T2BCE_VHCI
+	tristate "Apple T2 virtual USB host controller"
+	depends on T2BCE_CORE && USB
+	help
+	  Virtual USB 2.0 host controller for devices exposed by bridgeOS,
+	  including the internal keyboard, trackpad, Touch Bar, and camera.
+
+	  If compiled as a module, it will be called t2bce_vhci.
+
+config T2BCE_AUDIO
+	tristate "Apple T2 audio support"
+	depends on T2BCE_CORE && SND
+	select SND_PCM
+	select SND_JACK
+	help
+	  ALSA driver for the audio endpoints exposed by bridgeOS on Apple
+	  T2 Macs.
+
+	  If compiled as a module, it will be called t2bce_audio.
+
+endmenu
