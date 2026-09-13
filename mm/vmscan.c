@@ -196,7 +196,11 @@ struct scan_control {
 /*
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
  */
+#ifdef CONFIG_CACHY
+int vm_swappiness = 100;
+#else
 int vm_swappiness = 60;
+#endif
 
 static int sc_swappiness(struct scan_control *sc, struct mem_cgroup *memcg)
 {
@@ -4123,7 +4127,11 @@ static bool lruvec_is_reclaimable(struct lruvec *lruvec, struct scan_control *sc
 }
 
 /* to protect the working set of the last N jiffies */
+#ifdef CONFIG_CACHY
+static unsigned long lru_gen_min_ttl __read_mostly = 100;
+#else
 static unsigned long lru_gen_min_ttl __read_mostly;
+#endif
 
 static void lru_gen_age_node(struct pglist_data *pgdat, struct scan_control *sc)
 {

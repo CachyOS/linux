@@ -2487,6 +2487,9 @@ Kernel parameters
 			disable
 			  Do not enable intel_pstate as the default
 			  scaling driver for the supported processors
+			enable
+			  Enable intel_pstate in-case "disable" was passed
+			  previously in the kernel boot parameters
                         active
                           Use intel_pstate driver to bypass the scaling
                           governors layer of cpufreq and provides it own
@@ -5063,6 +5066,15 @@ Kernel parameters
 		nomsi		[MSI] If the PCI_MSI kernel config parameter is
 				enabled, this kernel boot option can be used to
 				disable the use of MSI interrupts system-wide.
+		pcie_acs_override =
+					[PCIE] Override missing PCIe ACS support for:
+				downstream
+					All downstream ports - full ACS capabilities
+				multfunction
+					All multifunction devices - multifunction ACS subset
+				id:nnnn:nnnn
+					Specfic device - full ACS capabilities
+					Specified as vid:did (vendor/device ID) in hex
 		noioapicquirk	[APIC] Disable all boot interrupt quirks.
 				Safety option to keep boot IRQs enabled. This
 				should never be necessary.
@@ -7943,6 +7955,8 @@ Kernel parameters
 			obtained from HW or FW using either an MSR or CPUID(0x15).
 			Warn if the difference is more than 500 ppm.
 			[x86] watchdog: Enforce the clocksource watchdog on TSC
+			[x86] directsync: attempt to sync the tsc via direct
+			writes if MSR_IA32_TSC_ADJUST isn't available
 
 	tsc_early_khz=  [X86,EARLY] Skip early TSC calibration and use the given
 			value instead. Useful when the early TSC frequency discovery
