@@ -697,7 +697,9 @@ static void __free_cluster(struct swap_info_struct *si, struct swap_cluster_info
 	move_cluster(si, ci, &si->free_clusters, CLUSTER_FLAG_FREE);
 	ci->order = 0;
 #ifdef CONFIG_XSWAP
-	xswap_try_shrink(si);
+	/* Only xswap devices, and not while the device is being torn down. */
+	if ((si->flags & SWP_XSWAP) && (si->flags & SWP_WRITEOK))
+		schedule_work(&si->xswap_shrink_work);
 #endif
 }
 
@@ -3244,6 +3246,7 @@ static void free_swap_cluster_info(struct swap_info_struct *si)
 
 #ifdef CONFIG_XSWAP
 	if (si->flags & SWP_XSWAP) {
+		cancel_work_sync(&si->xswap_shrink_work);
 		/* Unmap all mapped clusters and free the VM_SPARSE area */
 		if (si->nr_clusters_mapped > 0)
 			xswap_unmap_clusters(si, 0, si->nr_clusters_mapped);
@@ -3346,6 +3349,11 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	total_swap_pages -= p->pages;
 	spin_unlock(&p->lock);
 	spin_unlock(&swap_lock);
+
+#ifdef CONFIG_XSWAP
+	if (p->flags & SWP_XSWAP)
+		cancel_work_sync(&p->xswap_shrink_work);
+#endif
 
 	wait_for_allocation(p);
 
@@ -3907,8 +3915,9 @@ static int xswap_collect_page(pte_t *pte, unsigned long addr, void *data)
 	return 0;
 }
 
-static int xswap_unmap_clusters(struct swap_info_struct *si,
-				unsigned long start_idx, unsigned long nr)
+/* Caller must hold si->xswap_lock; -ENOMEM leaves the mapping intact. */
+static int xswap_unmap_clusters_locked(struct swap_info_struct *si,
+				       unsigned long start_idx, unsigned long nr)
 {
 	unsigned long start_addr = (unsigned long)si->cluster_info +
 				   (size_t)start_idx * sizeof(struct swap_cluster_info);
@@ -3922,11 +3931,8 @@ static int xswap_unmap_clusters(struct swap_info_struct *si,
 	unsigned int noreclaim_flags;
 	int i;
 
-	mutex_lock(&si->xswap_lock);
-
 	if (vm_start >= vm_end) {
 		WRITE_ONCE(si->nr_clusters_mapped, start_idx);
-		mutex_unlock(&si->xswap_lock);
 		return 0;
 	}
 
@@ -3946,10 +3952,8 @@ static int xswap_unmap_clusters(struct swap_info_struct *si,
 	xpd.pages = kmalloc_array(npages, sizeof(*xpd.pages),
 				  __GFP_HIGH | __GFP_NOMEMALLOC | GFP_KERNEL);
 	memalloc_noreclaim_restore(noreclaim_flags);
-	if (!xpd.pages) {
-		mutex_unlock(&si->xswap_lock);
+	if (!xpd.pages)
 		return -ENOMEM;
-	}
 
 	xpd.nr = 0;
 	xpd.max = npages;
@@ -3964,8 +3968,18 @@ static int xswap_unmap_clusters(struct swap_info_struct *si,
 
 	/* Pairs with READ_ONCE() in shrink/grow paths. */
 	WRITE_ONCE(si->nr_clusters_mapped, start_idx);
-	mutex_unlock(&si->xswap_lock);
 	return 0;
+}
+
+static int xswap_unmap_clusters(struct swap_info_struct *si,
+				unsigned long start_idx, unsigned long nr)
+{
+	int ret;
+
+	mutex_lock(&si->xswap_lock);
+	ret = xswap_unmap_clusters_locked(si, start_idx, nr);
+	mutex_unlock(&si->xswap_lock);
+	return ret;
 }
 
 /* Track the end of the run of pages that is already mapped. */
@@ -3986,6 +4000,16 @@ static int xswap_mapped_end(pte_t *pte, unsigned long addr, void *data)
 #define XSWAP_SHRINK_SLACK	XSWAP_GROW_CLUSTERS
 #define XSWAP_SHRINK_MIN	(XSWAP_GROW_CLUSTERS * 4)
 
+static void xswap_shrink_work_fn(struct work_struct *work)
+{
+	struct swap_info_struct *si = container_of(work,
+			struct swap_info_struct, xswap_shrink_work);
+
+	if (!(READ_ONCE(si->flags) & SWP_WRITEOK))
+		return;
+	xswap_try_shrink(si);
+}
+
 /*
  * Try to shrink the cluster_info tail: unmap contiguous free clusters
  * at the end of the mapped range.
@@ -3993,14 +4017,16 @@ static int xswap_mapped_end(pte_t *pte, unsigned long addr, void *data)
 static void xswap_try_shrink(struct swap_info_struct *si)
 {
 	struct swap_cluster_info *ci;
-	unsigned long nr_mapped, last, idx;
+	unsigned long nr_mapped, nr_tail, nr_unmap, start_idx, i;
 
 	if (!(si->flags & SWP_XSWAP))
 		return;
 
+	mutex_lock(&si->xswap_lock);
+
 	nr_mapped = READ_ONCE(si->nr_clusters_mapped);
-	if (nr_mapped <= 1) /* keep cluster 0 */
-		return;
+	if (nr_mapped <= 1)	/* keep cluster 0 */
+		goto out_unlock;
 
 	/*
 	 * Reclaim on our own, but only once the mapped range is at most
@@ -4009,27 +4035,70 @@ static void xswap_try_shrink(struct swap_info_struct *si)
 	 * an RCU grace period.
 	 */
 	if (atomic_long_read(&si->inuse_pages) * 2 > nr_mapped * SWAPFILE_CLUSTER)
-		return;
+		goto out_unlock;
 
-	/* Find the last non-free cluster from the tail */
-	last = nr_mapped;
-	while (last > 1) {
-		idx = last - 1;
-		ci = &si->cluster_info[idx];
-		if (ci->count || ci->flags != CLUSTER_FLAG_FREE)
+	/*
+	 * Count the free clusters at the tail of the mapped range.  Scanned,
+	 * not tracked: the count must be exact to size the unmap, and an
+	 * incremental count falls behind on out-of-order frees.
+	 */
+	nr_tail = 0;
+	while (nr_mapped - nr_tail > 1) {
+		ci = &si->cluster_info[nr_mapped - nr_tail - 1];
+		if (READ_ONCE(ci->count) ||
+		    READ_ONCE(ci->flags) != CLUSTER_FLAG_FREE)
 			break;
-		last = idx;
+		nr_tail++;
+	}
+	if (nr_tail < XSWAP_SHRINK_SLACK + XSWAP_SHRINK_MIN)
+		goto out_unlock;
+
+	nr_unmap = rounddown(nr_tail - XSWAP_SHRINK_SLACK, XSWAP_GROW_CLUSTERS);
+	if (!nr_unmap)
+		goto out_unlock;
+	start_idx = nr_mapped - nr_unmap;
+
+	/*
+	 * Only shrink a run that reaches the mapped end; otherwise
+	 * truncating nr_clusters_mapped would orphan the active tail.
+	 */
+	spin_lock(&si->lock);
+	for (i = start_idx; i < nr_mapped; i++) {
+		ci = &si->cluster_info[i];
+		if (READ_ONCE(ci->flags) != CLUSTER_FLAG_FREE)
+			break;
+		/* Skip clusters whose lock is currently held. */
+		if (!spin_trylock(&ci->lock)) {
+			spin_unlock(&si->lock);
+			goto out_unlock;
+		}
+		spin_unlock(&ci->lock);
+	}
+	if (i != nr_mapped) {
+		spin_unlock(&si->lock);
+		goto out_unlock;
 	}
 
-	if (last == nr_mapped)
-		return; /* nothing to shrink */
+	for (i = start_idx; i < nr_mapped; i++) {
+		ci = &si->cluster_info[i];
+		list_del_init(&ci->list);
+		WRITE_ONCE(ci->flags, CLUSTER_FLAG_NONE);
+	}
+	spin_unlock(&si->lock);
 
-	if (nr_mapped - last < XSWAP_SHRINK_SLACK + XSWAP_SHRINK_MIN)
-		return;
+	if (xswap_unmap_clusters_locked(si, start_idx, nr_unmap)) {
+		spin_lock(&si->lock);
+		for (i = start_idx; i < nr_mapped; i++) {
+			ci = &si->cluster_info[i];
+			WRITE_ONCE(ci->flags, CLUSTER_FLAG_FREE);
+			list_add_tail(&ci->list, &si->free_clusters);
+		}
+		spin_unlock(&si->lock);
+		goto out_unlock;
+	}
 
-	last += XSWAP_SHRINK_SLACK;
-
-	xswap_unmap_clusters(si, last, nr_mapped - last);
+out_unlock:
+	mutex_unlock(&si->xswap_lock);
 }
 #endif /* CONFIG_XSWAP */
 
@@ -4094,6 +4163,7 @@ static int setup_swap_clusters_info(struct swap_info_struct *si,
 			}
 		}
 
+		INIT_WORK(&si->xswap_shrink_work, xswap_shrink_work_fn);
 		return 0;
 
 err_unmap:
