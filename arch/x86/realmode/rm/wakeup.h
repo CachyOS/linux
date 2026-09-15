@@ -23,6 +23,8 @@ struct wakeup_header {
 	u64 pmode_gdt;
 	u32 pmode_misc_en_low;	/* Protected mode MISC_ENABLE */
 	u32 pmode_misc_en_high;
+	u32 pmode_tsc_low;
+	u32 pmode_tsc_high;
 	u32 pmode_behavior;	/* Wakeup routine behavior flags */
 	u32 realmode_flags;
 	u32 real_magic;
@@ -39,5 +41,6 @@ extern struct wakeup_header wakeup_header;
 #define WAKEUP_BEHAVIOR_RESTORE_MISC_ENABLE     0
 #define WAKEUP_BEHAVIOR_RESTORE_CR4		1
 #define WAKEUP_BEHAVIOR_RESTORE_EFER		2
+#define WAKEUP_BEHAVIOR_RESTORE_TSC		3
 
 #endif /* ARCH_X86_KERNEL_ACPI_RM_WAKEUP_H */
