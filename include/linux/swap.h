@@ -16,6 +16,8 @@
 #include <uapi/linux/mempolicy.h>
 #include <asm/page.h>
 
+struct kobject;
+
 #define SWAP_FLAG_PREFER	0x8000	/* set if swap priority specified */
 #define SWAP_FLAG_PRIO_MASK	0x7fff
 #define SWAP_FLAG_DISCARD	0x10000 /* enable discard for swap */
@@ -251,8 +253,9 @@ struct swap_info_struct {
 #ifdef CONFIG_XSWAP
 	struct vm_struct	*cluster_vm;	/* VM_SPARSE area for cluster_info */
 	unsigned long		nr_clusters_max;/* total clusters in the xswap address space */
-	unsigned long		nr_clusters;	/* how far the array may grow */
+	unsigned long		nr_clusters;	/* growth ceiling, set by type<N>/limit */
 	unsigned long		nr_clusters_mapped; /* currently mapped cluster count */
+	struct kobject		*xswap_dev_kobj; /* sysfs: /sys/kernel/mm/xswap/type<N>/ */
 	struct work_struct	xswap_shrink_work; /* deferred shrink trigger */
 	struct mutex		xswap_lock;	/* serialize map/unmap operations */
 #endif
@@ -262,7 +265,7 @@ struct swap_info_struct {
 					/* list of cluster that contains at least one free slot */
 	struct list_head frag_clusters[SWAP_NR_ORDERS];
 					/* list of cluster that are fragmented or contented */
-	unsigned int pages;		/* total of usable pages of swap */
+	unsigned int pages;		/* total of usable pages of swap; mutable for xswap */
 	atomic_long_t inuse_pages;	/* number of those currently in use */
 	struct swap_sequential_cluster *global_cluster; /* Use one global cluster for rotating device */
 	spinlock_t global_cluster_lock;	/* Serialize usage of global cluster */
@@ -275,10 +278,13 @@ struct swap_info_struct {
 					 * inuse_pages and all cluster lists.
 					 * Other fields are only changed
 					 * at swapon/swapoff, so are protected
-					 * by swap_lock. changing flags need
-					 * hold this lock and swap_lock. If
-					 * both locks need hold, hold swap_lock
-					 * first.
+					 * by swap_lock, except for pages:
+					 * xswap updates it at runtime from
+					 * type<N>/limit, and readers without
+					 * swap_lock use READ_ONCE(). changing
+					 * flags need hold this lock and
+					 * swap_lock. If both locks need hold,
+					 * hold swap_lock first.
 					 */
 	struct work_struct discard_work; /* discard worker */
 	struct work_struct reclaim_work; /* reclaim worker */
