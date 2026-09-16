@@ -1311,15 +1311,17 @@ new_cluster:
 
 #ifdef CONFIG_XSWAP
 	/* For xswap: grow the cluster_info array, then retry. */
-	if (!found && (si->flags & SWP_XSWAP) &&
-	    READ_ONCE(si->nr_clusters_mapped) < READ_ONCE(si->nr_clusters_max) &&
-	    list_empty(&si->free_clusters)) {
-		unsigned long nr_new = min(READ_ONCE(si->nr_clusters_max) -
-					  READ_ONCE(si->nr_clusters_mapped),
-					  XSWAP_GROW_CLUSTERS);
-		unsigned long start = READ_ONCE(si->nr_clusters_mapped);
-		unsigned long i;
+	if (!found && (si->flags & SWP_XSWAP) && list_empty(&si->free_clusters)) {
+		unsigned long ceiling = READ_ONCE(si->nr_clusters);
+		unsigned long mapped = READ_ONCE(si->nr_clusters_mapped);
+		unsigned long nr_new, start, i;
 		int ret;
+
+		if (mapped >= ceiling)
+			goto done;
+
+		nr_new = min(ceiling - mapped, XSWAP_GROW_CLUSTERS);
+		start = mapped;
 
 		/*
 		 * Mapping pages can sleep.  The lock only guards the per-cpu
@@ -4195,6 +4197,7 @@ static int setup_swap_clusters_info(struct swap_info_struct *si,
 		cluster_info = vm->addr;
 		si->cluster_vm = vm;
 		si->nr_clusters_max = nr_clusters;
+		si->nr_clusters = nr_clusters;
 		si->cluster_info = cluster_info;
 
 		/* Must be initialized before xswap_map_clusters() locks it. */
