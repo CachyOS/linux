@@ -67,8 +67,8 @@
 
 static int xswap_map_clusters(struct swap_info_struct *si,
 			      unsigned long start_idx, unsigned long nr);
-static void xswap_unmap_clusters(struct swap_info_struct *si,
-				 unsigned long start_idx, unsigned long nr);
+static int xswap_unmap_clusters(struct swap_info_struct *si,
+				unsigned long start_idx, unsigned long nr);
 static int xswap_mapped_end(pte_t *pte, unsigned long addr, void *data);
 static void xswap_try_shrink(struct swap_info_struct *si);
 
@@ -3244,9 +3244,14 @@ static void free_swap_cluster_info(struct swap_info_struct *si)
 			}
 			spin_unlock(&ci->lock);
 		}
-		/* Unmap all mapped clusters and free the VM_SPARSE area */
-		if (si->nr_clusters_mapped > 0)
-			xswap_unmap_clusters(si, 0, si->nr_clusters_mapped);
+		/*
+		 * free_vm_area() drops the mapping without freeing the pages,
+		 * so the unmap has to succeed first.  Retry; its only failure
+		 * is a transient -ENOMEM while collecting the backing pages.
+		 */
+		while (si->nr_clusters_mapped > 0 &&
+		       xswap_unmap_clusters(si, 0, si->nr_clusters_mapped))
+			cond_resched();
 		free_vm_area(si->cluster_vm);
 		si->cluster_vm = NULL;
 		si->cluster_info = NULL;
@@ -3889,21 +3894,44 @@ fail:
 	return -ENOMEM;
 }
 
-static void xswap_unmap_clusters(struct swap_info_struct *si,
-				 unsigned long start_idx, unsigned long nr)
+struct xswap_page_data {
+	struct page **pages;
+	int nr;
+	int max;
+};
+
+static int xswap_collect_page(pte_t *pte, unsigned long addr, void *data)
+{
+	struct xswap_page_data *xpd = data;
+	pte_t pteval = ptep_get(pte);
+
+	if (!pte_present(pteval))
+		return 0;
+	if (xpd->nr < xpd->max)
+		xpd->pages[xpd->nr++] = pte_page(pteval);
+	return 0;
+}
+
+static int xswap_unmap_clusters(struct swap_info_struct *si,
+				unsigned long start_idx, unsigned long nr)
 {
 	unsigned long start_addr = (unsigned long)si->cluster_info +
 				   (size_t)start_idx * sizeof(struct swap_cluster_info);
 	unsigned long end_addr = start_addr + (size_t)nr * sizeof(struct swap_cluster_info);
 	unsigned long vm_start = PAGE_ALIGN(start_addr);
 	unsigned long vm_end = PAGE_ALIGN(end_addr);
+	unsigned long size;
+	unsigned long npages;
+	struct xswap_page_data xpd;
+	unsigned int noreclaim_flags;
+	int i;
 
 	mutex_lock(&si->xswap_lock);
 
 	if (vm_start >= vm_end) {
 		WRITE_ONCE(si->nr_clusters_mapped, start_idx);
 		mutex_unlock(&si->xswap_lock);
-		return;
+		return 0;
 	}
 
 	/*
@@ -3915,12 +3943,32 @@ static void xswap_unmap_clusters(struct swap_info_struct *si,
 	flush_percpu_swap_cluster(si);
 	synchronize_rcu();
 
+	size = vm_end - vm_start;
+	npages = size >> PAGE_SHIFT;
+
+	noreclaim_flags = memalloc_noreclaim_save();
+	xpd.pages = kmalloc_array(npages, sizeof(*xpd.pages),
+				  __GFP_HIGH | __GFP_NOMEMALLOC | GFP_KERNEL);
+	memalloc_noreclaim_restore(noreclaim_flags);
+	if (!xpd.pages) {
+		mutex_unlock(&si->xswap_lock);
+		return -ENOMEM;
+	}
+
+	xpd.nr = 0;
+	xpd.max = npages;
+	apply_to_existing_page_range(&init_mm, vm_start, size,
+				     xswap_collect_page, &xpd);
+
 	vm_area_unmap_pages(si->cluster_vm, vm_start, vm_end);
-	/* vm_area_unmap_pages() clears PTEs but does not free pages. */
-	/* TODO: free backing pages via page table walk or tracking bitmap */
+
+	for (i = 0; i < xpd.nr; i++)
+		__free_page(xpd.pages[i]);
+	kfree(xpd.pages);
 
 	WRITE_ONCE(si->nr_clusters_mapped, start_idx);
 	mutex_unlock(&si->xswap_lock);
+	return 0;
 }
 
 /* Track the end of the run of pages that is already mapped. */
@@ -4053,7 +4101,13 @@ static int setup_swap_clusters_info(struct swap_info_struct *si,
 		return 0;
 
 err_unmap:
-		xswap_unmap_clusters(si, 0, si->nr_clusters_mapped);
+		/*
+		 * Retry until the unmap succeeds.  Its only failure is a transient
+		 * -ENOMEM while collecting the backing pages.
+		 */
+		while (si->nr_clusters_mapped > 0 &&
+		       xswap_unmap_clusters(si, 0, si->nr_clusters_mapped))
+			cond_resched();
 err_free_vm:
 		free_vm_area(si->cluster_vm);
 		si->cluster_vm = NULL;
