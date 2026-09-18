@@ -266,11 +266,6 @@ static inline unsigned long swap_table_get(struct swap_cluster_info *ci,
 	return swp_tb;
 }
 
-/*
- * Resolve @entry's cluster and read its slot, both under RCU. A vswap
- * cluster is allocated on demand and freed by kfree_rcu(), so a caller
- * starting from an entry cannot resolve it beforehand.
- */
 static inline unsigned long swap_table_lookup(swp_entry_t entry)
 {
 	struct swap_cluster_info *ci;
@@ -279,10 +274,6 @@ static inline unsigned long swap_table_lookup(swp_entry_t entry)
 
 	rcu_read_lock();
 	ci = __swap_entry_to_cluster(entry);
-	if (!ci) {
-		rcu_read_unlock();
-		return null_to_swp_tb();
-	}
 	table = rcu_dereference(ci->table);
 	swp_tb = table ? atomic_long_read(&table[swp_cluster_offset(entry)])
 		       : null_to_swp_tb();

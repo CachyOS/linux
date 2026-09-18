@@ -78,7 +78,7 @@ static inline void swap_rmap_clear_cache_only(struct swap_cluster_info *ci,
 /*
  * Virtual table entry encoding for vswap clusters.
  *
- * Each entry in ci_dyn->virtual_table stores the backing type and
+ * Each entry in ci->virtual_table stores the backing type and
  * pointer for a virtual swap slot. Tag in low 3 bits, payload in
  * upper 61 bits.
  *
@@ -109,7 +109,7 @@ static inline void swap_rmap_clear_cache_only(struct swap_cluster_info *ci,
  *
  * Locking: a slot's vtable entry (the vswap entry's backend) is only
  * stable while the caller owns and holds the lock on that entry's swap
- * cache folio. The cluster lock (ci_dyn->ci.lock) only makes an individual
+ * cache folio. The cluster lock (ci->lock) only makes an individual
  * vtable read atomic, and by itself does not give the caller the right to
  * change the backend. A backend read without the folio lock is
  * best-effort and must be re-validated under the folio lock before
@@ -156,18 +156,18 @@ static inline struct zswap_entry *vtable_to_zswap(unsigned long vt)
 
 /* Virtual table accessors */
 
-static inline unsigned long __vtable_get(struct swap_cluster_info_dynamic *ci_dyn,
+static inline unsigned long __vtable_get(struct swap_cluster_info *ci,
 					 unsigned int off)
 {
 	VM_WARN_ON_ONCE(off >= SWAPFILE_CLUSTER);
-	return atomic_long_read(&ci_dyn->virtual_table[off]);
+	return atomic_long_read(&ci->virtual_table[off]);
 }
 
-static inline void __vtable_set(struct swap_cluster_info_dynamic *ci_dyn,
+static inline void __vtable_set(struct swap_cluster_info *ci,
 				unsigned int off, unsigned long vt)
 {
 	VM_WARN_ON_ONCE(off >= SWAPFILE_CLUSTER);
-	atomic_long_set(&ci_dyn->virtual_table[off], vt);
+	atomic_long_set(&ci->virtual_table[off], vt);
 }
 
 /**
@@ -175,18 +175,13 @@ static inline void __vtable_set(struct swap_cluster_info_dynamic *ci_dyn,
  * @entry: the virtual swap entry
  * @voff: out param, receives @entry's slot offset within the cluster
  *
- * Return: the locked vswap cluster, or NULL if @entry has no live cluster.
+ * Return: the locked vswap cluster.
  */
-static inline struct swap_cluster_info_dynamic *
+static inline struct swap_cluster_info *
 vswap_lock_cluster(swp_entry_t entry, unsigned int *voff)
 {
-	struct swap_cluster_info *ci;
-
-	ci = swap_cluster_lock(__swap_entry_to_info(entry), swp_offset(entry));
-	if (!ci)
-		return NULL;
 	*voff = swp_cluster_offset(entry);
-	return container_of(ci, struct swap_cluster_info_dynamic, ci);
+	return swap_cluster_lock(__swap_entry_to_info(entry), swp_offset(entry));
 }
 
 /**
@@ -199,16 +194,13 @@ vswap_lock_cluster(swp_entry_t entry, unsigned int *voff)
  */
 static inline swp_entry_t vswap_to_phys(swp_entry_t entry)
 {
-	struct swap_cluster_info_dynamic *ci_dyn;
+	struct swap_cluster_info *ci;
 	unsigned int voff;
 	unsigned long vt;
 
-	ci_dyn = vswap_lock_cluster(entry, &voff);
-	if (!ci_dyn)
-		return (swp_entry_t){};
-
-	vt = __vtable_get(ci_dyn, voff);
-	swap_cluster_unlock(&ci_dyn->ci);
+	ci = vswap_lock_cluster(entry, &voff);
+	vt = __vtable_get(ci, voff);
+	swap_cluster_unlock(ci);
 
 	if (vtable_type(vt) != VSWAP_SWAPFILE)
 		return (swp_entry_t){};
@@ -232,13 +224,13 @@ void __vswap_release_backing(struct swap_cluster_info *ci,
 static inline void vswap_zswap_store(swp_entry_t entry,
 				     struct zswap_entry *ze)
 {
-	struct swap_cluster_info_dynamic *ci_dyn;
+	struct swap_cluster_info *ci;
 	unsigned int voff;
 
-	ci_dyn = vswap_lock_cluster(entry, &voff);
-	__vswap_release_backing(&ci_dyn->ci, voff, 1);
-	__vtable_set(ci_dyn, voff, (unsigned long)ze | VSWAP_ZSWAP);
-	swap_cluster_unlock(&ci_dyn->ci);
+	ci = vswap_lock_cluster(entry, &voff);
+	__vswap_release_backing(ci, voff, 1);
+	__vtable_set(ci, voff, (unsigned long)ze | VSWAP_ZSWAP);
+	swap_cluster_unlock(ci);
 }
 
 /**
@@ -250,15 +242,13 @@ static inline void vswap_zswap_store(swp_entry_t entry,
  */
 static inline struct zswap_entry *vswap_zswap_load(swp_entry_t entry)
 {
-	struct swap_cluster_info_dynamic *ci_dyn;
+	struct swap_cluster_info *ci;
 	unsigned int voff;
 	unsigned long vt;
 
-	ci_dyn = vswap_lock_cluster(entry, &voff);
-	if (!ci_dyn)
-		return NULL;
-	vt = __vtable_get(ci_dyn, voff);
-	swap_cluster_unlock(&ci_dyn->ci);
+	ci = vswap_lock_cluster(entry, &voff);
+	vt = __vtable_get(ci, voff);
+	swap_cluster_unlock(ci);
 
 	if (vtable_type(vt) != VSWAP_ZSWAP)
 		return NULL;
@@ -270,7 +260,7 @@ swp_entry_t folio_realloc_swap(struct folio *folio);
 void folio_release_non_phys_swap_backing(struct folio *folio);
 
 /*
- * Walk nr vtable slots starting at voff in ci_dyn. Returns the prefix
+ * Walk nr vtable slots starting at voff in ci. Returns the prefix
  * length of slots sharing one effective backing type. For SWAPFILE,
  * the prefix is also restricted to contiguous offsets in the same
  * swapfile.
@@ -283,9 +273,9 @@ void folio_release_non_phys_swap_backing(struct folio *folio);
  *   vtable=ZSWAP                      -> VSWAP_ZSWAP
  *
  * *typep returns the effective type of slot 0. Caller holds
- * ci_dyn->ci.lock.
+ * ci->lock.
  */
-static inline int __vswap_check_backing(struct swap_cluster_info_dynamic *ci_dyn,
+static inline int __vswap_check_backing(struct swap_cluster_info *ci,
 					unsigned int voff, int nr,
 					enum vswap_backing_type *typep)
 {
@@ -295,13 +285,13 @@ static inline int __vswap_check_backing(struct swap_cluster_info_dynamic *ci_dyn
 	unsigned long vt, swap_tb;
 	int i;
 
-	lockdep_assert_held(&ci_dyn->ci.lock);
+	lockdep_assert_held(&ci->lock);
 
 	for (i = 0; i < nr; i++) {
-		vt = __vtable_get(ci_dyn, voff + i);
+		vt = __vtable_get(ci, voff + i);
 		if (vtable_type(vt) == VSWAP_NONE) {
-			swap_tb = __swap_table_get(&ci_dyn->ci, voff + i);
-			if (__swap_table_test_zero(&ci_dyn->ci, voff + i))
+			swap_tb = __swap_table_get(ci, voff + i);
+			if (__swap_table_test_zero(ci, voff + i))
 				slot_type = VSWAP_ZERO;
 			else if (swp_tb_is_folio(swap_tb))
 				slot_type = VSWAP_FOLIO;
@@ -331,18 +321,13 @@ static inline int __vswap_check_backing(struct swap_cluster_info_dynamic *ci_dyn
 static inline int vswap_check_backing(swp_entry_t entry, int nr,
 				      enum vswap_backing_type *typep)
 {
-	struct swap_cluster_info_dynamic *ci_dyn;
+	struct swap_cluster_info *ci;
 	unsigned int voff;
 	int ret;
 
-	ci_dyn = vswap_lock_cluster(entry, &voff);
-	if (!ci_dyn) {
-		if (typep)
-			*typep = VSWAP_NONE;
-		return 0;
-	}
-	ret = __vswap_check_backing(ci_dyn, voff, nr, typep);
-	swap_cluster_unlock(&ci_dyn->ci);
+	ci = vswap_lock_cluster(entry, &voff);
+	ret = __vswap_check_backing(ci, voff, nr, typep);
+	swap_cluster_unlock(ci);
 	return ret;
 }
 
@@ -365,21 +350,18 @@ static inline bool folio_phys_swap_backed(struct folio *folio)
 		type == VSWAP_SWAPFILE);
 }
 
-static inline int vswap_cluster_alloc_vtable(struct swap_cluster_info_dynamic *ci_dyn,
+static inline int vswap_cluster_alloc_vtable(struct swap_cluster_info *ci,
 					     gfp_t gfp)
 {
-	ci_dyn->virtual_table = kcalloc(SWAPFILE_CLUSTER,
-					sizeof(*ci_dyn->virtual_table), gfp);
-	return ci_dyn->virtual_table ? 0 : -ENOMEM;
+	ci->virtual_table = kcalloc(SWAPFILE_CLUSTER,
+				    sizeof(*ci->virtual_table), gfp);
+	return ci->virtual_table ? 0 : -ENOMEM;
 }
 
 static inline void vswap_cluster_free_vtable(struct swap_cluster_info *ci)
 {
-	struct swap_cluster_info_dynamic *ci_dyn;
-
-	ci_dyn = container_of(ci, struct swap_cluster_info_dynamic, ci);
-	kfree(ci_dyn->virtual_table);
-	ci_dyn->virtual_table = NULL;
+	kfree(ci->virtual_table);
+	ci->virtual_table = NULL;
 }
 
 #else /* !CONFIG_SWAP */

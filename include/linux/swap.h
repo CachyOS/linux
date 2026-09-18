@@ -170,6 +170,7 @@ static inline void mm_account_reclaimed_pages(unsigned long pages)
 
 struct address_space;
 struct sysinfo;
+struct vm_struct;
 struct zone;
 
 /*
@@ -277,7 +278,9 @@ struct swap_info_struct {
 	struct list_head discard_clusters; /* discard clusters list */
 	struct plist_node avail_list;   /* entry in swap_avail_head */
 	const struct swap_ops *ops;
-	struct xarray cluster_info_pool; /* Xarray for vswap dynamic cluster info */
+	struct vm_struct *cluster_info_area; /* Vswap cluster array reservation */
+	unsigned int nr_mapped_clusters; /* Mapped prefix of cluster_info */
+	struct mutex cluster_grow_lock;	/* Serialize growth of the array */
 };
 
 static inline bool swap_is_vswap(struct swap_info_struct *si)
