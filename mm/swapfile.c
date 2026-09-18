@@ -36,6 +36,7 @@
 #include <linux/poll.h>
 #include <linux/oom.h>
 #include <linux/swapfile.h>
+#include <linux/swap_ops.h>
 #include <linux/export.h>
 #include <linux/sort.h>
 #include <linux/completion.h>
@@ -46,6 +47,7 @@
 #include <asm/tlbflush.h>
 #include <linux/leafops.h>
 #include "swap_table.h"
+#include "vswap.h"
 #include "internal.h"
 #include "swap.h"
 
@@ -401,6 +403,8 @@ static inline bool cluster_is_usable(struct swap_cluster_info *ci, int order)
 static inline unsigned int cluster_index(struct swap_info_struct *si,
 					 struct swap_cluster_info *ci)
 {
+	if (swap_is_vswap(si))
+		return container_of(ci, struct swap_cluster_info_dynamic, ci)->index;
 	return ci - si->cluster_info;
 }
 
@@ -594,10 +598,15 @@ static void move_cluster(struct swap_info_struct *si,
 	lockdep_assert_held(&ci->lock);
 
 	spin_lock(&si->lock);
-	if (ci->flags == CLUSTER_FLAG_NONE)
+	if (!list) {
+		/* Going away. An isolated cluster is already off its list. */
+		if (ci->flags != CLUSTER_FLAG_NONE)
+			list_del(&ci->list);
+	} else if (ci->flags == CLUSTER_FLAG_NONE) {
 		list_add_tail(&ci->list, list);
-	else
+	} else {
 		list_move_tail(&ci->list, list);
+	}
 	spin_unlock(&si->lock);
 	ci->flags = new_flags;
 }
@@ -615,6 +624,18 @@ static void __free_cluster(struct swap_info_struct *si, struct swap_cluster_info
 {
 	swap_cluster_assert_empty(ci, 0, SWAPFILE_CLUSTER, false);
 	swap_cluster_free_table(ci);
+
+	if (swap_is_vswap(si)) {
+		struct swap_cluster_info_dynamic *ci_dyn;
+
+		/* vswap clusters are destroyed, not returned to free_clusters. */
+		ci_dyn = container_of(ci, struct swap_cluster_info_dynamic, ci);
+		xa_erase(&si->cluster_info_pool, ci_dyn->index);
+		move_cluster(si, ci, NULL, CLUSTER_FLAG_DEAD);
+		kfree_rcu(ci_dyn, rcu);
+		return;
+	}
+
 	move_cluster(si, ci, &si->free_clusters, CLUSTER_FLAG_FREE);
 	ci->order = 0;
 }
@@ -851,6 +872,8 @@ static bool cluster_reclaim_range(struct swap_info_struct *si,
 	unsigned long offset = start, end = start + nr_pages;
 	unsigned long swp_tb;
 
+	VM_WARN_ON_ONCE(swap_is_vswap(si));
+
 	spin_unlock(&ci->lock);
 	do {
 		swp_tb = swap_table_get(ci, offset % SWAPFILE_CLUSTER);
@@ -1042,6 +1065,44 @@ static unsigned int alloc_swap_scan_list(struct swap_info_struct *si,
 	return found;
 }
 
+static unsigned int vswap_alloc_cluster(struct swap_info_struct *si,
+					struct folio *folio)
+{
+	struct swap_cluster_info_dynamic *ci_dyn;
+	struct swap_cluster_info *ci;
+	unsigned long offset;
+
+	VM_WARN_ON(!swap_is_vswap(si));
+
+	ci_dyn = kzalloc_obj(*ci_dyn, GFP_ATOMIC | __GFP_NOWARN);
+	if (!ci_dyn)
+		return SWAP_ENTRY_INVALID;
+
+	spin_lock_init(&ci_dyn->ci.lock);
+	INIT_LIST_HEAD(&ci_dyn->ci.list);
+
+	if (swap_cluster_alloc_table(&ci_dyn->ci, GFP_ATOMIC | __GFP_NOWARN)) {
+		kfree(ci_dyn);
+		return SWAP_ENTRY_INVALID;
+	}
+
+	/* Lock before publishing: xa_alloc makes the cluster findable by offset. */
+	ci = &ci_dyn->ci;
+	spin_lock(&ci->lock);
+
+	if (xa_alloc(&si->cluster_info_pool, &ci_dyn->index, ci_dyn,
+		     XA_LIMIT(1, DIV_ROUND_UP(si->max, SWAPFILE_CLUSTER) - 1),
+		     GFP_ATOMIC | __GFP_NOWARN)) {
+		spin_unlock(&ci->lock);
+		swap_cluster_free_table(&ci_dyn->ci);
+		kfree(ci_dyn);
+		return SWAP_ENTRY_INVALID;
+	}
+
+	offset = cluster_offset(si, ci);
+	return alloc_swap_scan_cluster(si, ci, folio, offset);
+}
+
 static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
 {
 	long to_scan = 1;
@@ -1064,7 +1125,9 @@ static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
 				spin_unlock(&ci->lock);
 				nr_reclaim = __try_to_reclaim_swap(si, offset,
 								   TTRS_ANYWAY);
-				spin_lock(&ci->lock);
+				ci = swap_cluster_lock(si, offset);
+				if (!ci)
+					goto next;
 				if (nr_reclaim) {
 					offset += abs(nr_reclaim);
 					continue;
@@ -1078,6 +1141,7 @@ static void swap_reclaim_full_clusters(struct swap_info_struct *si, bool force)
 			relocate_cluster(si, ci);
 
 		swap_cluster_unlock(ci);
+next:
 		if (to_scan <= 0)
 			break;
 
@@ -1150,6 +1214,12 @@ new_cluster:
 
 	if (order < PMD_ORDER) {
 		found = alloc_swap_scan_list(si, &si->nonfull_clusters[order], folio, true);
+		if (found)
+			goto done;
+	}
+
+	if (swap_is_vswap(si)) {
+		found = vswap_alloc_cluster(si, folio);
 		if (found)
 			goto done;
 	}
@@ -1290,8 +1360,10 @@ static bool swap_usage_add(struct swap_info_struct *si, unsigned int nr_entries)
 	/*
 	 * If device is full, and SWAP_USAGE_OFFLIST_BIT is not set,
 	 * remove it from the plist.
+	 *
+	 * Vswap is never on the avail list, so skip it.
 	 */
-	if (unlikely(val == si->pages)) {
+	if (unlikely(val == si->pages) && !swap_is_vswap(si)) {
 		del_from_avail_list(si, false);
 		return true;
 	}
@@ -1306,8 +1378,10 @@ static void swap_usage_sub(struct swap_info_struct *si, unsigned int nr_entries)
 	/*
 	 * If device is not full, and SWAP_USAGE_OFFLIST_BIT is set,
 	 * add it to the plist.
+	 *
+	 * Vswap is never on the avail list, so skip it.
 	 */
-	if (unlikely(val & SWAP_USAGE_OFFLIST_BIT))
+	if (unlikely(val & SWAP_USAGE_OFFLIST_BIT) && !swap_is_vswap(si))
 		add_to_avail_list(si, false);
 }
 
@@ -1354,6 +1428,10 @@ static void swap_range_free(struct swap_info_struct *si, unsigned long offset,
 
 static bool get_swap_device_info(struct swap_info_struct *si)
 {
+	/* The vswap device is always alive, so it needs no refcount. */
+	if (swap_is_vswap(si))
+		return true;
+
 	if (!percpu_ref_tryget_live(&si->users))
 		return false;
 	/*
@@ -1389,11 +1467,11 @@ static bool swap_alloc_fast(struct folio *folio)
 		return false;
 
 	ci = swap_cluster_lock(si, offset);
-	if (cluster_is_usable(ci, order)) {
+	if (ci && cluster_is_usable(ci, order)) {
 		if (cluster_is_empty(ci))
 			offset = cluster_offset(si, ci);
 		alloc_swap_scan_cluster(si, ci, folio, offset);
-	} else {
+	} else if (ci) {
 		swap_cluster_unlock(ci);
 	}
 
@@ -1515,6 +1593,7 @@ int swap_retry_table_alloc(swp_entry_t entry, gfp_t gfp)
 	if (!si)
 		return 0;
 
+	/* The source PTE pins the entry, so its cluster is alive. */
 	ci = __swap_offset_to_cluster(si, offset);
 	ret = swap_extend_table_alloc(si, ci, swp_cluster_offset(entry), gfp);
 
@@ -1912,7 +1991,7 @@ out:
 	return NULL;
 put_out:
 	pr_err_ratelimited("%s: %s%08lx\n", __func__, Bad_offset, entry.val);
-	percpu_ref_put(&si->users);
+	put_swap_device(si);
 	return NULL;
 }
 
@@ -1991,7 +2070,7 @@ bool swap_entry_swapped(struct swap_info_struct *si, swp_entry_t entry)
 	unsigned long swp_tb;
 
 	ci = swap_cluster_lock(si, offset);
-	swp_tb = swap_table_get(ci, offset % SWAPFILE_CLUSTER);
+	swp_tb = __swap_table_get(ci, swp_cluster_offset(entry));
 	swap_cluster_unlock(ci);
 
 	return swp_tb_get_count(swp_tb) > 0;
@@ -2044,6 +2123,7 @@ static bool folio_maybe_swapped(struct folio *folio)
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_locked(folio), folio);
 	VM_WARN_ON_ONCE_FOLIO(!folio_test_swapcache(folio), folio);
 
+	/* Folio is locked and in swap cache, so ci->count > 0: cluster is alive. */
 	ci = __swap_entry_to_cluster(entry);
 	ci_off = swp_cluster_offset(entry);
 	ci_end = ci_off + folio_nr_pages(folio);
@@ -2238,6 +2318,9 @@ static int __find_hibernation_swap_type(dev_t device, sector_t offset)
 
 		if (!(sis->flags & SWP_WRITEOK))
 			continue;
+		/* vswap has no bdev, so it is never a hibernation target. */
+		if (swap_is_vswap(sis))
+			continue;
 
 		if (device == sis->bdev->bd_dev) {
 			struct swap_extent *se = first_se(sis);
@@ -2363,6 +2446,9 @@ int find_first_swap(dev_t *device)
 		struct swap_info_struct *sis = swap_info[type];
 
 		if (!(sis->flags & SWP_WRITEOK))
+			continue;
+		/* vswap has no bdev, so it is never a hibernation target. */
+		if (swap_is_vswap(sis))
 			continue;
 		*device = sis->bdev->bd_dev;
 		spin_unlock(&swap_lock);
@@ -2580,8 +2666,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 						&vmf);
 		}
 		if (!folio) {
-			swp_tb = swap_table_get(__swap_entry_to_cluster(entry),
-						swp_cluster_offset(entry));
+			swp_tb = swap_table_lookup(entry);
 			if (swp_tb_get_count(swp_tb) <= 0)
 				continue;
 			return -ENOMEM;
@@ -2992,15 +3077,24 @@ static int setup_swap_extents(struct swap_info_struct *sis,
 
 static void _enable_swap_info(struct swap_info_struct *si)
 {
-	atomic_long_add(si->pages, &nr_swap_pages);
-	total_swap_pages += si->pages;
+	if (!swap_is_vswap(si)) {
+		atomic_long_add(si->pages, &nr_swap_pages);
+		total_swap_pages += si->pages;
+	}
 
 	assert_spin_locked(&swap_lock);
 
-	plist_add(&si->list, &swap_active_head);
+	/*
+	 * Vswap has no backing file and no swapoff support, so keep it
+	 * off swap_active_head (used by swapoff filename lookup and
+	 * swap_sync_discard) and swap_avail_head (physical allocator).
+	 */
+	if (!swap_is_vswap(si)) {
+		plist_add(&si->list, &swap_active_head);
 
-	/* Add back to available list */
-	add_to_avail_list(si, true);
+		/* Add back to available list */
+		add_to_avail_list(si, true);
+	}
 }
 
 /*
@@ -3044,11 +3138,30 @@ static void wait_for_allocation(struct swap_info_struct *si)
 	}
 }
 
-static void free_swap_cluster_info(struct swap_cluster_info *cluster_info,
+static void free_swap_cluster_info(struct swap_info_struct *si,
+				   struct swap_cluster_info *cluster_info,
 				   unsigned long maxpages)
 {
+	struct swap_cluster_info_dynamic *ci_dyn;
 	struct swap_cluster_info *ci;
+	unsigned long idx;
 	int i, nr_clusters = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER);
+
+	if (swap_is_vswap(si)) {
+		xa_for_each(&si->cluster_info_pool, idx, ci_dyn) {
+			ci = &ci_dyn->ci;
+			spin_lock(&ci->lock);
+			if (cluster_table_is_alloced(ci)) {
+				swap_cluster_assert_empty(ci, 0,
+							  SWAPFILE_CLUSTER, true);
+				swap_cluster_free_table(ci);
+			}
+			spin_unlock(&ci->lock);
+			kfree(ci_dyn);
+		}
+		xa_destroy(&si->cluster_info_pool);
+		return;
+	}
 
 	if (!cluster_info)
 		return;
@@ -3196,7 +3309,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	mutex_unlock(&swapon_mutex);
 	kfree(p->global_cluster);
 	p->global_cluster = NULL;
-	free_swap_cluster_info(cluster_info, maxpages);
+	free_swap_cluster_info(p, cluster_info, maxpages);
 
 	inode = mapping->host;
 
@@ -3543,9 +3656,38 @@ static int setup_swap_clusters_info(struct swap_info_struct *si,
 				    unsigned long maxpages)
 {
 	unsigned long nr_clusters = DIV_ROUND_UP(maxpages, SWAPFILE_CLUSTER);
-	struct swap_cluster_info *cluster_info;
+	struct swap_cluster_info *cluster_info = NULL;
+	struct swap_cluster_info_dynamic *ci_dyn = NULL;
 	int err = -ENOMEM;
 	unsigned long i;
+
+	/* A vswap device uses an xarray pool instead of a static array. */
+	if (swap_is_vswap(si)) {
+		nr_clusters = 0;
+		xa_init_flags(&si->cluster_info_pool, XA_FLAGS_ALLOC);
+
+		/*
+		 * Pre-allocate cluster 0 and mark slot 0 (header page)
+		 * as bad so the allocator never hands out page offset 0.
+		 */
+		ci_dyn = kzalloc_obj(*ci_dyn, GFP_KERNEL);
+		if (!ci_dyn)
+			goto err;
+		spin_lock_init(&ci_dyn->ci.lock);
+		INIT_LIST_HEAD(&ci_dyn->ci.list);
+
+		err = xa_insert(&si->cluster_info_pool, 0, ci_dyn, GFP_KERNEL);
+		if (err) {
+			kfree(ci_dyn);
+			goto err;
+		}
+
+		err = swap_cluster_setup_bad_slot(si, &ci_dyn->ci, 0, false);
+		if (err)
+			goto err;
+
+		goto setup_cluster_info;
+	}
 
 	cluster_info = kvzalloc_objs(*cluster_info, nr_clusters);
 	if (!cluster_info)
@@ -3590,6 +3732,7 @@ static int setup_swap_clusters_info(struct swap_info_struct *si,
 			goto err;
 	}
 
+setup_cluster_info:
 	INIT_LIST_HEAD(&si->free_clusters);
 	INIT_LIST_HEAD(&si->full_clusters);
 	INIT_LIST_HEAD(&si->discard_clusters);
@@ -3611,10 +3754,16 @@ static int setup_swap_clusters_info(struct swap_info_struct *si,
 		}
 	}
 
+	/* Slot 0 is bad, so cluster 0 never empties. The rest of it is usable. */
+	if (swap_is_vswap(si)) {
+		ci_dyn->ci.flags = CLUSTER_FLAG_NONFULL;
+		list_add_tail(&ci_dyn->ci.list, &si->nonfull_clusters[0]);
+	}
+
 	si->cluster_info = cluster_info;
 	return 0;
 err:
-	free_swap_cluster_info(cluster_info, maxpages);
+	free_swap_cluster_info(si, cluster_info, maxpages);
 	return err;
 }
 
@@ -3833,7 +3982,7 @@ bad_swap:
 	si->global_cluster = NULL;
 	inode = NULL;
 	destroy_swap_extents(si, swap_file);
-	free_swap_cluster_info(si->cluster_info, si->max);
+	free_swap_cluster_info(si, si->cluster_info, si->max);
 	si->cluster_info = NULL;
 	/*
 	 * Clear the SWP_USED flag after all resources are freed so
@@ -3964,3 +4113,87 @@ static int __init swapfile_init(void)
 	return 0;
 }
 subsys_initcall(swapfile_init);
+
+struct swap_info_struct *vswap_si;
+DEFINE_STATIC_KEY_FALSE(vswap_key);
+
+static bool vswap_enabled_early __initdata = IS_ENABLED(CONFIG_VSWAP_DEFAULT_ON);
+
+static int __init early_vswap(char *buf)
+{
+	return kstrtobool(buf, &vswap_enabled_early);
+}
+early_param("vswap", early_vswap);
+
+/* vswap does no IO on its own. */
+static const struct swap_ops vswap_ops = { };
+
+static int __init vswap_init(void)
+{
+	struct swap_info_struct *si;
+	unsigned long maxpages;
+	int err;
+
+	if (!IS_ENABLED(CONFIG_64BIT)) {
+		if (vswap_enabled_early)
+			pr_warn("vswap: requires 64-bit architecture; vswap disabled, swapout falls back to direct physical swap\n");
+		return 0;
+	}
+
+	if (!vswap_enabled_early)
+		return 0;
+
+	si = alloc_swap_info();
+	if (IS_ERR(si)) {
+		pr_warn("vswap: alloc_swap_info failed (%ld); vswap disabled, swapout falls back to direct physical swap\n",
+			PTR_ERR(si));
+		return 0;
+	}
+
+	/*
+	 * Each swapped page holds a reference on its cgroup's
+	 * memcg->private_id_ref, a 32-bit refcount_t, so a cgroup that swaps
+	 * REFCOUNT_MAX pages saturates it and leaks the memcg until reboot.
+	 * Cap the device there; that also keeps page counts inside si->max's
+	 * unsigned int. Lifting it needs the memcg refcount widened, which a
+	 * physical swapfile of this size needs too.
+	 */
+	maxpages = min(swapfile_maximum_size,
+		       ALIGN_DOWN((unsigned long)REFCOUNT_MAX, SWAPFILE_CLUSTER));
+	/*
+	 * SWP_WRITEOK enables slot allocation. SWP_SOLIDSTATE selects
+	 * per-CPU cluster allocation; vswap has no si->global_cluster.
+	 */
+	si->flags |= SWP_VSWAP | SWP_SOLIDSTATE | SWP_WRITEOK;
+	si->ops = &vswap_ops;
+	si->bdev = NULL;
+	si->max = maxpages;
+	si->pages = maxpages - 1;
+
+	INIT_WORK(&si->discard_work, swap_discard_work);
+	INIT_WORK(&si->reclaim_work, swap_reclaim_work);
+
+	err = setup_swap_clusters_info(si, NULL, maxpages);
+	if (err)
+		goto fail;
+
+	mutex_lock(&swapon_mutex);
+	enable_swap_info(si);
+	mutex_unlock(&swapon_mutex);
+
+	vswap_si = si;
+	pr_info("vswap: created virtual swap device (%lu pages)\n", maxpages);
+
+	/* Last: everything above must be visible before routing starts. */
+	static_branch_enable(&vswap_key);
+	return 0;
+
+fail:
+	pr_warn("vswap: setup_swap_clusters_info failed (%d); vswap disabled, swapout falls back to direct physical swap\n",
+		err);
+	spin_lock(&swap_lock);
+	si->flags = 0;
+	spin_unlock(&swap_lock);
+	return 0;
+}
+late_initcall(vswap_init);

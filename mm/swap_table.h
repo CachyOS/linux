@@ -6,6 +6,8 @@
 #include <linux/atomic.h>
 #include "swap.h"
 
+extern struct swap_info_struct *vswap_si;
+
 /* A typical flat array in each cluster as swap table */
 struct swap_table {
 	atomic_long_t entries[SWAPFILE_CLUSTER];
@@ -259,6 +261,31 @@ static inline unsigned long swap_table_get(struct swap_cluster_info *ci,
 	rcu_read_lock();
 	table = rcu_dereference(ci->table);
 	swp_tb = table ? atomic_long_read(&table[off]) : null_to_swp_tb();
+	rcu_read_unlock();
+
+	return swp_tb;
+}
+
+/*
+ * Resolve @entry's cluster and read its slot, both under RCU. A vswap
+ * cluster is allocated on demand and freed by kfree_rcu(), so a caller
+ * starting from an entry cannot resolve it beforehand.
+ */
+static inline unsigned long swap_table_lookup(swp_entry_t entry)
+{
+	struct swap_cluster_info *ci;
+	atomic_long_t *table;
+	unsigned long swp_tb;
+
+	rcu_read_lock();
+	ci = __swap_entry_to_cluster(entry);
+	if (!ci) {
+		rcu_read_unlock();
+		return null_to_swp_tb();
+	}
+	table = rcu_dereference(ci->table);
+	swp_tb = table ? atomic_long_read(&table[swp_cluster_offset(entry)])
+		       : null_to_swp_tb();
 	rcu_read_unlock();
 
 	return swp_tb;
