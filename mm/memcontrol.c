@@ -65,6 +65,7 @@
 #include "internal.h"
 #include "swap.h"
 #include "swap_table.h"
+#include "vswap.h"
 #include <net/sock.h>
 #include <net/ip.h>
 #include "slab.h"
@@ -5809,6 +5810,34 @@ long mem_cgroup_get_nr_swap_pages(struct mem_cgroup *memcg)
 				      READ_ONCE(memcg->swap.max) -
 				      page_counter_read(&memcg->swap));
 	return nr_swap_pages;
+}
+
+/**
+ * mem_cgroup_can_swap - can @memcg swap out at least @nr_pages more pages?
+ * @memcg: the memcg to query
+ * @nr_pages: the number of pages the caller wants to swap out
+ *
+ * A vswap zswap-backed swapout needs no physical slot, so gate on the
+ * swap.max headroom rather than the physical free count.
+ *
+ * Return: true if @memcg can swap out at least @nr_pages more pages.
+ */
+bool mem_cgroup_can_swap(struct mem_cgroup *memcg, long nr_pages)
+{
+	long avail;
+
+	if (mem_cgroup_can_vswap(memcg))
+		return true;
+
+	if (!vswap_is_enabled() || !zswap_is_enabled())
+		return mem_cgroup_get_nr_swap_pages(memcg) >= nr_pages;
+
+	avail = PAGE_COUNTER_MAX;
+	for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg))
+		avail = min_t(long, avail,
+			      READ_ONCE(memcg->swap.max) -
+			      page_counter_read(&memcg->swap));
+	return avail >= nr_pages;
 }
 
 bool mem_cgroup_swap_full(struct folio *folio)

@@ -71,6 +71,7 @@ struct swap_cluster_info_dynamic {
 	struct swap_cluster_info ci;
 	unsigned int index;		/* for cluster_index() */
 	struct rcu_head rcu;
+	atomic_long_t *virtual_table;	/* Backing pointers for vswap slots */
 };
 
 /* All on-list cluster must have a non-zero flag. */

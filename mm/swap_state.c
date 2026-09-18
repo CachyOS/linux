@@ -27,6 +27,7 @@
 #include "internal.h"
 #include "swap_table.h"
 #include "swap.h"
+#include "vswap.h"
 
 /* Swap readahead cluster size, as a power of 2 pages. */
 static int page_cluster;
@@ -187,6 +188,13 @@ static int __swap_cache_add_check(struct swap_cluster_info *ci,
 
 	if (nr == 1)
 		return 0;
+
+	/*
+	 * Reject a vswap batch so swap_cache_alloc_folio falls back to
+	 * order 0.
+	 */
+	if (is_vswap_entry(targ_entry))
+		return -EBUSY;
 
 	is_zero = __swap_table_test_zero(ci, ci_off);
 	ci_off = round_down(ci_off, nr);

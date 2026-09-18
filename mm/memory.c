@@ -89,6 +89,7 @@
 #include "pgalloc-track.h"
 #include "internal.h"
 #include "swap.h"
+#include "vswap.h"
 
 #if defined(LAST_CPUPID_NOT_IN_PAGE_FLAGS) && !defined(CONFIG_COMPILE_TEST)
 #warning Unfortunate NUMA and NUMA Balancing config, growing page-frame for last_cpupid.
@@ -4653,6 +4654,9 @@ static inline bool should_try_to_free_swap(struct swap_info_struct *si,
 {
 	if (!folio_test_swapcache(folio))
 		return false;
+	/* A vswap entry holds no physical slot, so keeping it saves no IO. */
+	if (is_vswap_entry(folio->swap))
+		return true;
 	/*
 	 * Always try to free swap cache for SWP_SYNCHRONOUS_IO devices. Swap
 	 * cache can help save some IO or memory overhead, but these devices
@@ -4809,15 +4813,18 @@ static unsigned long thp_swapin_suitable_orders(struct vm_fault *vmf)
 	if (unlikely(userfaultfd_armed(vma)))
 		return 0;
 
+	entry = softleaf_from_pte(vmf->orig_pte);
+
 	/*
 	 * A large swapped out folio could be partially or fully in zswap. We
 	 * lack handling for such cases, so fallback to swapping in order-0
 	 * folio.
+	 *
+	 * THP swapin for vswap is not supported yet either.
 	 */
-	if (!zswap_never_enabled())
+	if (is_vswap_entry(entry) || !zswap_never_enabled())
 		return 0;
 
-	entry = softleaf_from_pte(vmf->orig_pte);
 	/*
 	 * Get a list of all the (large) orders below PMD_ORDER that are enabled
 	 * and suitable for swapping THP.
