@@ -1951,7 +1951,8 @@ failed:
 bool mem_cgroup_can_vswap(struct mem_cgroup *memcg)
 {
 	return vswap_is_enabled() && zswap_is_enabled() &&
-	       (mem_cgroup_disabled() || do_memsw_account());
+	       (mem_cgroup_disabled() || do_memsw_account() ||
+		mem_cgroup_may_zswap(memcg, false));
 }
 
 static bool vswap_alloc(struct folio *folio)
@@ -2035,6 +2036,7 @@ again:
 int folio_alloc_swap(struct folio *folio)
 {
 	unsigned int order = folio_order(folio);
+	struct mem_cgroup *memcg;
 	unsigned int size = 1 << order;
 
 	VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
@@ -2061,9 +2063,21 @@ int folio_alloc_swap(struct folio *folio)
 	if (!vswap_alloc(folio))
 		folio_alloc_phys_swap(folio);
 
-	/* Need to call this even if allocation failed, for MEMCG_SWAP_FAIL. */
-	if (unlikely(mem_cgroup_try_charge_swap(folio)))
-		swap_cache_del_folio(folio);
+	/*
+	 * Need to call this even if allocation failed, for MEMCG_SWAP_FAIL.
+	 * A vswap entry has no physical swap yet, so only record the memcg.
+	 * folio_realloc_swap() charges it once backing is allocated.
+	 */
+	memcg = mem_cgroup_swap_get(folio);
+	if (memcg) {
+		if (!is_vswap_entry(folio->swap) &&
+		    unlikely(mem_cgroup_swap_charge(memcg, size))) {
+			mem_cgroup_swap_put(memcg, size);
+			swap_cache_del_folio(folio);
+		} else {
+			mem_cgroup_swap_record(folio, memcg);
+		}
+	}
 
 	if (unlikely(!folio_test_swapcache(folio)))
 		return -ENOMEM;
@@ -2121,6 +2135,36 @@ static void __swap_cluster_free_phys_backing(struct swap_info_struct *psi,
 					     unsigned int ci_start,
 					     unsigned int nr_pages);
 
+static void vswap_uncharge_cgroup_batch(unsigned short memcg_id,
+					unsigned int batch_nr,
+					unsigned int batch_nr_swapfile)
+{
+	struct mem_cgroup *memcg;
+	unsigned int n;
+
+	/*
+	 * v1 (memsw): entries keep their memsw charge across swapout
+	 * regardless of backing, so uncharge all of them. v2: only
+	 * swapfile-backed entries are charged, so uncharge just those.
+	 *
+	 * On v1 the id is written by __memcg1_swapout() as the folio leaves the
+	 * swap cache and cleared by memcg1_swapin() when it comes back, both
+	 * under the cluster lock. Callers still holding a cached folio are
+	 * outside that window and see @memcg_id == 0, so only the free path
+	 * uncharges. On v2 the id is set when swap is allocated, so those
+	 * callers do uncharge, which balances the charge folio_realloc_swap()
+	 * took.
+	 */
+	n = do_memsw_account() ? batch_nr : batch_nr_swapfile;
+	if (!n)
+		return;
+
+	rcu_read_lock();
+	memcg = memcg_id ? mem_cgroup_from_private_id(memcg_id) : NULL;
+	rcu_read_unlock();
+	mem_cgroup_swap_uncharge(memcg, n);
+}
+
 /**
  * __vswap_release_backing - release the backing of a range of vtable slots
  * @ci: the locked vswap cluster
@@ -2141,12 +2185,25 @@ void __vswap_release_backing(struct swap_cluster_info *ci,
 	unsigned int ci_off;
 	unsigned long vt;
 	swp_entry_t phys_first = {};
+	unsigned short batch_id, cur_id;
+	unsigned int batch_nr = 0, batch_nr_swapfile = 0;
 
 	lockdep_assert_held(&ci->lock);
 	ci_dyn = container_of(ci, struct swap_cluster_info_dynamic, ci);
+	batch_id = __swap_cgroup_get(ci, ci_start);
 
 	for (ci_off = ci_start; ci_off < ci_start + nr; ci_off++) {
 		vt = __vtable_get(ci_dyn, ci_off);
+		cur_id = __swap_cgroup_get(ci, ci_off);
+
+		if (cur_id != batch_id) {
+			vswap_uncharge_cgroup_batch(batch_id, batch_nr,
+						    batch_nr_swapfile);
+			batch_id = cur_id;
+			batch_nr = 0;
+			batch_nr_swapfile = 0;
+		}
+		batch_nr++;
 
 		/* The free helper takes one contiguous run within one cluster. */
 		if (phys_off_start != phys_off_end &&
@@ -2164,6 +2221,7 @@ void __vswap_release_backing(struct swap_cluster_info *ci,
 
 		switch (vtable_type(vt)) {
 		case VSWAP_SWAPFILE:
+			batch_nr_swapfile++;
 			if (phys_off_start == phys_off_end) {
 				phys_first = vtable_to_phys(vt);
 				phys_off_start = swp_offset(phys_first);
@@ -2195,6 +2253,8 @@ void __vswap_release_backing(struct swap_cluster_info *ci,
 				phys_off_start % SWAPFILE_CLUSTER,
 				phys_off_end - phys_off_start);
 	}
+
+	vswap_uncharge_cgroup_batch(batch_id, batch_nr, batch_nr_swapfile);
 }
 
 /**
@@ -2284,7 +2344,10 @@ swp_entry_t folio_realloc_swap(struct folio *folio)
 	swp_entry_t vswap_entry = folio->swap;
 	struct swap_cluster_info *ci;
 	struct swap_cluster_info_dynamic *ci_dyn;
+	struct mem_cgroup *memcg;
 	unsigned int voff;
+	unsigned long vt;
+	unsigned short memcg_id;
 	swp_entry_t phys_entry = {};
 	swp_entry_t pe;
 	int i, nr = folio_nr_pages(folio);
@@ -2293,18 +2356,37 @@ swp_entry_t folio_realloc_swap(struct folio *folio)
 	VM_BUG_ON_FOLIO(!folio_test_swapcache(folio), folio);
 	VM_WARN_ON(!is_vswap_entry(vswap_entry));
 
-	phys_entry = vswap_to_phys(vswap_entry);
-	if (phys_entry.val)
-		return phys_entry;
+	voff = swp_cluster_offset(vswap_entry);
+	ci = __swap_entry_to_cluster(vswap_entry);
+	ci_dyn = container_of(ci, struct swap_cluster_info_dynamic, ci);
+
+	spin_lock(&ci->lock);
+	vt = __vtable_get(ci_dyn, voff);
+	if (vtable_type(vt) == VSWAP_SWAPFILE) {
+		spin_unlock(&ci->lock);
+		return vtable_to_phys(vt);
+	}
+	memcg_id = __swap_cgroup_get(ci, voff);
+	spin_unlock(&ci->lock);
 
 	phys_entry = folio_alloc_phys_swap(folio);
 	if (!phys_entry.val)
 		return (swp_entry_t){};
 
-	voff = swp_cluster_offset(vswap_entry);
+	rcu_read_lock();
+	memcg = folio_memcg(folio);
+	if (!memcg || mem_cgroup_private_id(memcg) != memcg_id)
+		memcg = memcg_id ? mem_cgroup_from_private_id(memcg_id) : NULL;
+	rcu_read_unlock();
 
-	ci = __swap_entry_to_cluster(vswap_entry);
-	ci_dyn = container_of(ci, struct swap_cluster_info_dynamic, ci);
+	if (mem_cgroup_swap_charge(memcg, nr)) {
+		__swap_cluster_free_phys_backing(__swap_entry_to_info(phys_entry),
+						 __swap_entry_to_cluster(phys_entry),
+						 swp_cluster_offset(phys_entry),
+						 nr);
+		return (swp_entry_t){};
+	}
+
 	spin_lock(&ci->lock);
 	/*
 	 * Install PHYS backing without freeing any prior contents of the
@@ -2485,6 +2567,25 @@ static void __swap_cluster_free_phys_backing(struct swap_info_struct *psi,
 }
 
 /*
+ * Release the cgroup accounting of a batch of freed slots. For vswap the
+ * physical swap was already uncharged by __vswap_release_backing(), so only
+ * the ID ref is left to drop.
+ */
+static void memcg_swap_free(unsigned short id, unsigned int nr, bool is_vswap)
+{
+	struct mem_cgroup *memcg;
+
+	rcu_read_lock();
+	memcg = mem_cgroup_from_private_id(id);
+	if (memcg) {
+		if (!is_vswap)
+			mem_cgroup_swap_uncharge(memcg, nr);
+		mem_cgroup_swap_put(memcg, nr);
+	}
+	rcu_read_unlock();
+}
+
+/*
  * Free a set of swap slots after their swap count dropped to zero, or will be
  * zero after putting the last ref (saves one __swap_cluster_put_entry call).
  */
@@ -2496,10 +2597,11 @@ void __swap_cluster_free_entries(struct swap_info_struct *si,
 	unsigned short batch_id = 0, id_cur;
 	unsigned int ci_off = ci_start, ci_end = ci_start + nr_pages;
 	unsigned int batch_off = ci_off;
+	bool is_vswap = swap_is_vswap(si);
 
 	VM_WARN_ON(ci->count < nr_pages);
 
-	if (swap_is_vswap(si))
+	if (is_vswap)
 		__vswap_release_backing(ci, ci_start, nr_pages);
 
 	ci->count -= nr_pages;
@@ -2523,14 +2625,14 @@ void __swap_cluster_free_entries(struct swap_info_struct *si,
 		id_cur = __swap_cgroup_clear(ci, ci_off, 1);
 		if (batch_id != id_cur) {
 			if (batch_id)
-				mem_cgroup_uncharge_swap(batch_id, ci_off - batch_off);
+				memcg_swap_free(batch_id, ci_off - batch_off, is_vswap);
 			batch_id = id_cur;
 			batch_off = ci_off;
 		}
 	} while (++ci_off < ci_end);
 
 	if (batch_id)
-		mem_cgroup_uncharge_swap(batch_id, ci_off - batch_off);
+		memcg_swap_free(batch_id, ci_off - batch_off, is_vswap);
 
 	__swap_cluster_finish_free(si, ci, ci_start, nr_pages);
 }
