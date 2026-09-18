@@ -1598,7 +1598,7 @@ check_old:
 	 */
 	if (is_vswap_entry(swp)) {
 		if (index > 0)
-			folio_release_vswap_backing(folio);
+			folio_release_non_phys_swap_backing(folio);
 	} else {
 		unsigned type = swp_type(swp);
 		pgoff_t offset = swp_offset(swp);

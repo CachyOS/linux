@@ -20,6 +20,7 @@ struct zswap_entry;
 enum vswap_backing_type {
 	VSWAP_NONE	= 0,
 	VSWAP_ZSWAP	= 1,
+	VSWAP_SWAPFILE	= 2,
 	VSWAP_ZERO,
 	VSWAP_FOLIO,
 };
@@ -50,11 +51,15 @@ static inline bool is_vswap_entry(swp_entry_t entry)
  * pointer for a virtual swap slot. Tag in low 3 bits, payload in
  * upper 61 bits.
  *
- *   NONE:   |----- 0000 ------|000|  - no separate backend pointer
- *   ZSWAP:  |--- zswap_entry* |001|  - compressed in zswap (tag in low bits)
+ *   NONE:     |----- 0000 ------|000|  - no separate backend pointer
+ *   ZSWAP:    |--- zswap_entry* |001|  - compressed in zswap (tag in low bits)
+ *   SWAPFILE: |- type:5,off:56 -|010|  - on a physical swapfile
  *
- * Pointer payloads (ZSWAP) are stored directly with the tag OR'd into the
- * low bits (kernel pointers are >= 8-byte aligned, same approach as xarray).
+ * SWAPFILE packs swp_type in the top MAX_SWAPFILES_SHIFT bits and swp_offset in
+ * the middle VTABLE_PHYS_OFF_BITS bits, both above the tag, so the type is
+ * not shifted off the word. Pointer payloads (ZSWAP) are stored directly with
+ * the tag OR'd into the low bits (kernel pointers are >= 8-byte aligned, same
+ * approach as xarray).
  *
  * vtable[i] = NONE does not by itself mean "free". The swap_table entry
  * and the per-slot zero flag carry the rest of the state. The full
@@ -68,6 +73,8 @@ static inline bool is_vswap_entry(swp_entry_t entry)
  *   NONE      | *             | set   | zero-backed; cached if PFN set
  *   ZSWAP     | PFN           | clear | folio cached + zswap entry
  *   ZSWAP     | shadow / NULL | clear | evicted, only in zswap
+ *   SWAPFILE  | PFN           | clear | folio cached + physical slot
+ *   SWAPFILE  | shadow / NULL | clear | evicted, only on the swapfile
  *
  * Locking: a slot's vtable entry (the vswap entry's backend) is only
  * stable while the caller owns and holds the lock on that entry's swap
@@ -91,6 +98,23 @@ static inline bool is_vswap_entry(swp_entry_t entry)
 static inline enum vswap_backing_type vtable_type(unsigned long vt)
 {
 	return vt & VTABLE_TAG_MASK;
+}
+
+/* swp_offset field width in a physical backend slot; layout described above. */
+#define VTABLE_PHYS_OFF_BITS	(BITS_PER_LONG - VTABLE_TAG_BITS - MAX_SWAPFILES_SHIFT)
+
+static inline unsigned long vtable_mk_phys(swp_entry_t entry)
+{
+	VM_WARN_ON_ONCE(swp_offset(entry) >> VTABLE_PHYS_OFF_BITS);
+	return ((unsigned long)swp_type(entry) << (VTABLE_TAG_BITS + VTABLE_PHYS_OFF_BITS)) |
+	       (swp_offset(entry) << VTABLE_TAG_BITS) | VSWAP_SWAPFILE;
+}
+
+static inline swp_entry_t vtable_to_phys(unsigned long vt)
+{
+	VM_WARN_ON(vtable_type(vt) != VSWAP_SWAPFILE);
+	return swp_entry(vt >> (VTABLE_TAG_BITS + VTABLE_PHYS_OFF_BITS),
+			 (vt >> VTABLE_TAG_BITS) & ((1UL << VTABLE_PHYS_OFF_BITS) - 1));
 }
 
 static inline struct zswap_entry *vtable_to_zswap(unsigned long vt)
@@ -132,6 +156,33 @@ vswap_lock_cluster(swp_entry_t entry, unsigned int *voff)
 		return NULL;
 	*voff = swp_cluster_offset(entry);
 	return container_of(ci, struct swap_cluster_info_dynamic, ci);
+}
+
+/**
+ * vswap_to_phys - resolve a vswap entry's physical swap backing
+ * @entry: the virtual swap entry
+ *
+ * Context: takes and drops the vswap cluster lock internally.
+ * Return: the backing physical swp_entry_t, or the null entry (.val == 0)
+ * when @entry has no physical backing (NONE/ZSWAP/ZERO).
+ */
+static inline swp_entry_t vswap_to_phys(swp_entry_t entry)
+{
+	struct swap_cluster_info_dynamic *ci_dyn;
+	unsigned int voff;
+	unsigned long vt;
+
+	ci_dyn = vswap_lock_cluster(entry, &voff);
+	if (!ci_dyn)
+		return (swp_entry_t){};
+
+	vt = __vtable_get(ci_dyn, voff);
+	swap_cluster_unlock(&ci_dyn->ci);
+
+	if (vtable_type(vt) != VSWAP_SWAPFILE)
+		return (swp_entry_t){};
+
+	return vtable_to_phys(vt);
 }
 
 void __vswap_release_backing(struct swap_cluster_info *ci,
@@ -184,6 +235,104 @@ static inline struct zswap_entry *vswap_zswap_load(swp_entry_t entry)
 }
 
 void folio_release_vswap_backing(struct folio *folio);
+swp_entry_t folio_realloc_swap(struct folio *folio);
+void folio_release_non_phys_swap_backing(struct folio *folio);
+
+/*
+ * Walk nr vtable slots starting at voff in ci_dyn. Returns the prefix
+ * length of slots sharing one effective backing type. For SWAPFILE,
+ * the prefix is also restricted to contiguous offsets in the same
+ * swapfile.
+ *
+ * Effective type per slot:
+ *   vtable=NONE + zero flag set       -> VSWAP_ZERO
+ *   vtable=NONE + swap_table PFN tag  -> VSWAP_FOLIO
+ *   vtable=NONE + neither             -> VSWAP_NONE
+ *   vtable=SWAPFILE                   -> VSWAP_SWAPFILE
+ *   vtable=ZSWAP                      -> VSWAP_ZSWAP
+ *
+ * *typep returns the effective type of slot 0. Caller holds
+ * ci_dyn->ci.lock.
+ */
+static inline int __vswap_check_backing(struct swap_cluster_info_dynamic *ci_dyn,
+					unsigned int voff, int nr,
+					enum vswap_backing_type *typep)
+{
+	enum vswap_backing_type first_type = VSWAP_NONE;
+	enum vswap_backing_type slot_type;
+	swp_entry_t first_phys = {};
+	unsigned long vt, swap_tb;
+	int i;
+
+	lockdep_assert_held(&ci_dyn->ci.lock);
+
+	for (i = 0; i < nr; i++) {
+		vt = __vtable_get(ci_dyn, voff + i);
+		if (vtable_type(vt) == VSWAP_NONE) {
+			swap_tb = __swap_table_get(&ci_dyn->ci, voff + i);
+			if (__swap_table_test_zero(&ci_dyn->ci, voff + i))
+				slot_type = VSWAP_ZERO;
+			else if (swp_tb_is_folio(swap_tb))
+				slot_type = VSWAP_FOLIO;
+			else
+				slot_type = VSWAP_NONE;
+		} else {
+			slot_type = vtable_type(vt);
+		}
+
+		if (!i) {
+			first_type = slot_type;
+			if (first_type == VSWAP_SWAPFILE)
+				first_phys = vtable_to_phys(vt);
+		} else if (slot_type != first_type) {
+			break;
+		} else if (first_type == VSWAP_SWAPFILE &&
+			   vtable_to_phys(vt).val != first_phys.val + i) {
+			break;
+		}
+	}
+
+	if (typep)
+		*typep = first_type;
+	return i;
+}
+
+static inline int vswap_check_backing(swp_entry_t entry, int nr,
+				      enum vswap_backing_type *typep)
+{
+	struct swap_cluster_info_dynamic *ci_dyn;
+	unsigned int voff;
+	int ret;
+
+	ci_dyn = vswap_lock_cluster(entry, &voff);
+	if (!ci_dyn) {
+		if (typep)
+			*typep = VSWAP_NONE;
+		return 0;
+	}
+	ret = __vswap_check_backing(ci_dyn, voff, nr, typep);
+	swap_cluster_unlock(&ci_dyn->ci);
+	return ret;
+}
+
+/**
+ * folio_phys_swap_backed - test whether a folio is backed by a contiguous
+ *                          range of physical swap slots.
+ * @folio: a swap-cache resident folio
+ *
+ * Return: %true if @folio->swap is not a vswap entry, or if these vswap
+ * entries are backed by a contiguous range of physical slots.
+ */
+static inline bool folio_phys_swap_backed(struct folio *folio)
+{
+	swp_entry_t entry = folio->swap;
+	int nr = folio_nr_pages(folio);
+	enum vswap_backing_type type;
+
+	return !is_vswap_entry(entry) ||
+	       (vswap_check_backing(entry, nr, &type) == nr &&
+		type == VSWAP_SWAPFILE);
+}
 
 static inline int vswap_cluster_alloc_vtable(struct swap_cluster_info_dynamic *ci_dyn,
 					     gfp_t gfp)
@@ -214,6 +363,47 @@ static inline bool is_vswap_entry(swp_entry_t entry)
 	return false;
 }
 
+static inline swp_entry_t vswap_to_phys(swp_entry_t entry)
+{
+	return (swp_entry_t){};
+}
+
+static inline bool folio_phys_swap_backed(struct folio *folio)
+{
+	return true;
+}
+
 #endif /* CONFIG_SWAP */
+
+/*
+ * Test a per-backend swap flag (SWP_SYNCHRONOUS_IO, SWP_STABLE_WRITES, ...)
+ * for @entry. For a vswap entry the property belongs to the current
+ * physical backing rather than vswap_si itself; resolve to the backing
+ * and test there. Returns false for zswap/zero/unbacked vswap entries
+ * as they don't have a backing bdev.
+ */
+static inline bool swap_entry_backend_has_flag(struct swap_info_struct *si,
+					       swp_entry_t entry,
+					       unsigned long flag)
+{
+	struct swap_info_struct *phys_si;
+	swp_entry_t phys;
+	bool has_flag;
+
+	if (!swap_is_vswap(si))
+		return data_race(si->flags & flag);
+
+	phys = vswap_to_phys(entry);
+	if (!phys.val)
+		return false;
+
+	phys_si = get_swap_device(phys);
+	if (IS_ERR_OR_NULL(phys_si))
+		return false;
+
+	has_flag = data_race(phys_si->flags & flag);
+	put_swap_device(phys_si);
+	return has_flag;
+}
 
 #endif /* _MM_VSWAP_H */
