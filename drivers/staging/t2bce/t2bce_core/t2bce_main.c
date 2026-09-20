@@ -762,5 +762,9 @@ MODULE_AUTHOR("André Eikmeyer <andre.eikmeyer@gmail.com>");
 MODULE_DESCRIPTION("T2 BCE core driver");
 MODULE_VERSION("0.06");
 MODULE_SOFTDEP("post: t2bce_vhci");
+/*
+ * Legacy compat alias for existing installs.
+ */
+MODULE_ALIAS("apple-bce");
 module_init(t2bce_module_init);
 module_exit(t2bce_module_exit);
