@@ -98,6 +98,14 @@ int x86_acpi_suspend_lowlevel(void)
 	    !wrmsrq_safe(MSR_IA32_MISC_ENABLE, val.q))
 		header->pmode_behavior |=
 			(1 << WAKEUP_BEHAVIOR_RESTORE_MISC_ENABLE);
+
+	if ((boot_cpu_has(X86_FEATURE_TSC_ADJUST) ||
+	     tsc_allow_direct_sync) &&
+	    !rdmsr_safe(MSR_IA32_TSC,
+	                &header->pmode_tsc_low,
+	                &header->pmode_tsc_high))
+		header->pmode_behavior |=
+			(1 << WAKEUP_BEHAVIOR_RESTORE_TSC);
 	header->pmode_misc_en_low = val.l;
 	header->pmode_misc_en_high = val.h;
 	header->realmode_flags = acpi_realmode_flags;

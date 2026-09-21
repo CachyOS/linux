@@ -3166,6 +3166,9 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 
 		if (sd->flags & SD_SHARE_LLC) {
 			init_sched_domain_shared(&d, sd, SD_SHARE_LLC);
+#ifdef CONFIG_SCHED_POC_SELECTOR
+			poc_sd_shared_init(sd, cpumask_first(sched_domain_span(sd)));
+#endif
 
 			/*
 			 * In presence of higher domains, adjust the
