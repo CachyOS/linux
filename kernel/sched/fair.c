@@ -10082,8 +10082,14 @@ static inline bool set_preempt_buddy(struct cfs_rq *cfs_rq, struct sched_entity 
 
 static inline bool set_short_buddy(struct cfs_rq *cfs_rq, struct sched_entity *pse)
 {
-	if (cfs_rq->next && cfs_rq->next->slice < pse->slice)
-		return false;
+	if (cfs_rq->next) {
+		if (cfs_rq->next->slice < pse->slice)
+			return false;
+
+		if (cfs_rq->next->slice == pse->slice &&
+		    entity_before(cfs_rq->next, pse))
+			return false;
+	}
 
 	set_next_buddy(cfs_rq, pse);
 	return true;
