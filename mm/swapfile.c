@@ -456,6 +456,22 @@ static int swap_cluster_alloc_table(struct swap_cluster_info *ci, gfp_t gfp)
 	if (rcu_access_pointer(ci->table))
 		return 0;
 
+#ifdef CONFIG_MEMCG
+	if (!mem_cgroup_disabled()) {
+		VM_WARN_ON_ONCE(ci->memcg_table);
+		ci->memcg_table = kzalloc_obj(*ci->memcg_table, gfp);
+		if (!ci->memcg_table)
+			goto free;
+	}
+#endif
+
+#if !SWAP_TABLE_HAS_ZEROFLAG
+	VM_WARN_ON_ONCE(ci->zero_bitmap);
+	ci->zero_bitmap = bitmap_zalloc(SWAPFILE_CLUSTER, gfp);
+	if (!ci->zero_bitmap)
+		goto free;
+#endif
+
 	if (SWP_TABLE_USE_PAGE) {
 		folio = folio_alloc(gfp | __GFP_ZERO, 0);
 		if (folio)
@@ -464,30 +480,22 @@ static int swap_cluster_alloc_table(struct swap_cluster_info *ci, gfp_t gfp)
 		table = kmem_cache_zalloc(swap_table_cachep, gfp);
 	}
 	if (!table)
-		return -ENOMEM;
+		goto free;
 
+	/*
+	 * Make tables visible to cluster_is_usable() after everything is
+	 * ready. swap_cluster_populate() drops the cluster lock for a
+	 * sleeping allocation, and a CPU still caching an offset in this
+	 * cluster may lock it and allocate from it as soon as ci->table is
+	 * set.
+	 */
 	rcu_assign_pointer(ci->table, table);
-
-#ifdef CONFIG_MEMCG
-	if (!mem_cgroup_disabled()) {
-		VM_WARN_ON_ONCE(ci->memcg_table);
-		ci->memcg_table = kzalloc_obj(*ci->memcg_table, gfp);
-		if (!ci->memcg_table) {
-			swap_cluster_free_table(ci);
-			return -ENOMEM;
-		}
-	}
-#endif
-
-#if !SWAP_TABLE_HAS_ZEROFLAG
-	VM_WARN_ON_ONCE(ci->zero_bitmap);
-	ci->zero_bitmap = bitmap_zalloc(SWAPFILE_CLUSTER, gfp);
-	if (!ci->zero_bitmap) {
-		swap_cluster_free_table(ci);
-		return -ENOMEM;
-	}
-#endif
 	return 0;
+
+free:
+	/* Nothing is published yet, so this only frees the side tables. */
+	swap_cluster_free_table(ci);
+	return -ENOMEM;
 }
 
 /*
