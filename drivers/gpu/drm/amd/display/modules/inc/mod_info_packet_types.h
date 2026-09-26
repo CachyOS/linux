@@ -29,9 +29,10 @@
 enum adaptive_sync_type {
 	ADAPTIVE_SYNC_TYPE_NONE                  = 0,
 	ADAPTIVE_SYNC_TYPE_DP                    = 1,
-	FREESYNC_TYPE_PCON_IN_WHITELIST          = 2,
-	FREESYNC_TYPE_PCON_NOT_IN_WHITELIST      = 3,
+	ADAPTIVE_SYNC_TYPE_PCON_ALLOWED          = 2,
+	ADAPTIVE_SYNC_TYPE_PCON_NOT_ALLOWED      = 3,
 	ADAPTIVE_SYNC_TYPE_EDP                   = 4,
+	ADAPTIVE_SYNC_TYPE_HDMI                  = 5,
 };
 
 #endif /* MOD_INFO_PACKET_TYPES_H_ */
