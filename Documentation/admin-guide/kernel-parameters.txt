@@ -8408,6 +8408,13 @@ Kernel parameters
 			force		- force vulnerability detection even on
 					  unaffected processors
 
+	vswap=		[MM,EARLY]
+			Route swapouts through the virtual swap layer, which
+			allows zswap and zero-filled pages to be used without
+			a physical swap device. 64-bit only.
+			Format: { on | off }
+			Default: on if CONFIG_VSWAP_DEFAULT_ON=y, else off.
+
 	vsyscall=	[X86-64,EARLY]
 			Controls the behavior of vsyscalls (i.e. calls to
 			fixed addresses of 0xffffffffff600x00 from legacy
