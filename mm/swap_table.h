@@ -4,7 +4,10 @@
 
 #include <linux/rcupdate.h>
 #include <linux/atomic.h>
+#include <linux/swapops.h>
 #include "swap.h"
+
+extern struct swap_info_struct *vswap_si;
 
 /* A typical flat array in each cluster as swap table */
 struct swap_table {
@@ -28,7 +31,7 @@ struct swap_memcg_table {
  * NULL:     |---------------- 0 ---------------| - Free slot
  * Shadow:   |SWAP_COUNT|Z|---- SHADOW_VAL ---|1| - Swapped out slot
  * PFN:      |SWAP_COUNT|Z|------ PFN -------|10| - Cached slot
- * Pointer:  |----------- Pointer ----------|100| - (Unused)
+ * Pointer:  |C|------- vswap offset -------|100| - vswap rmap
  * Bad:      |------------- 1 -------------|1000| - Bad slot
  *
  * COUNT is `SWP_TB_COUNT_BITS` long, Z is the `SWP_TB_ZERO_FLAG` bit,
@@ -49,9 +52,8 @@ struct swap_memcg_table {
  * - PFN: Swap slot is in use, and cached. Memcg info is recorded on the page
  *   struct.
  *
- * - Pointer: Unused yet. `0b100` is reserved for potential pointer usage
- *   because only the lower three bits can be used as a marker for 8 bytes
- *   aligned pointers.
+ * - Pointer: Reverse map from a physical slot to the vswap entry that owns
+ *   it. See the layout below.
  *
  * - Bad: Swap slot is reserved, protects swap header or holes on swap devices.
  */
@@ -264,6 +266,22 @@ static inline unsigned long swap_table_get(struct swap_cluster_info *ci,
 	return swp_tb;
 }
 
+static inline unsigned long swap_table_lookup(swp_entry_t entry)
+{
+	struct swap_cluster_info *ci;
+	atomic_long_t *table;
+	unsigned long swp_tb;
+
+	rcu_read_lock();
+	ci = __swap_entry_to_cluster(entry);
+	table = rcu_dereference(ci->table);
+	swp_tb = table ? atomic_long_read(&table[swp_cluster_offset(entry)])
+		       : null_to_swp_tb();
+	rcu_read_unlock();
+
+	return swp_tb;
+}
+
 static inline void __swap_table_set_zero(struct swap_cluster_info *ci,
 					 unsigned int ci_off)
 {
@@ -365,5 +383,43 @@ static inline unsigned short __swap_cgroup_clear(struct swap_cluster_info *ci,
 	return 0;
 }
 #endif
+
+/*
+ * Pointer-tagged swap table entry: rmap for vswap-backing physical slots.
+ *
+ * On physical clusters, a Pointer-tagged entry stores the offset of the
+ * vswap entry that owns this physical slot (the reverse map). Only the
+ * offset is stored; the swap type is implicit (always vswap_si->type,
+ * since there is exactly one vswap device). The top bit is reserved as
+ * a cache-only flag, set when vswap swap_count drops to 0 but the folio
+ * is still in swap cache.
+ *
+ *   Pointer:  |C|---- vswap offset ----|100|
+ *              C = SWP_RMAP_CACHE_ONLY (the top bit)
+ */
+#define SWP_TB_PTR_MARK_BITS	3
+#define SWP_TB_PTR_MARK		0b100UL
+#define SWP_TB_PTR_MARK_MASK	((1UL << SWP_TB_PTR_MARK_BITS) - 1)
+#define SWP_RMAP_CACHE_ONLY	(1UL << (BITS_PER_LONG - 1))
+#define SWP_RMAP_ENTRY_MASK	(~(SWP_RMAP_CACHE_ONLY | SWP_TB_PTR_MARK_MASK))
+
+static inline bool swp_tb_is_pointer(unsigned long swp_tb)
+{
+	return (swp_tb & SWP_TB_PTR_MARK_MASK) == SWP_TB_PTR_MARK;
+}
+
+static inline unsigned long swp_entry_to_swp_tb_ptr(swp_entry_t entry)
+{
+	return (swp_offset(entry) << SWP_TB_PTR_MARK_BITS) | SWP_TB_PTR_MARK;
+}
+
+static inline swp_entry_t swp_tb_ptr_to_swp_entry(unsigned long swp_tb)
+{
+	unsigned long offset;
+
+	VM_WARN_ON(!swp_tb_is_pointer(swp_tb));
+	offset = (swp_tb & SWP_RMAP_ENTRY_MASK) >> SWP_TB_PTR_MARK_BITS;
+	return swp_entry(vswap_si->type, offset);
+}
 
 #endif

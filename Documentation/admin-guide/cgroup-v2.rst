@@ -1841,16 +1841,17 @@ The following nested keys are defined.
 	A read-only single value file which exists on non-root
 	cgroups.
 
-	The total amount of swap currently being used by the cgroup
-	and its descendants.
+	The total amount of physical swap currently being used by the
+	cgroup and its descendants.
 
   memory.swap.high
 	A read-write single value file which exists on non-root
 	cgroups.  The default is "max".
 
-	Swap usage throttle limit.  If a cgroup's swap usage exceeds
-	this limit, all its further allocations will be throttled to
-	allow userspace to implement custom out-of-memory procedures.
+	Physical swap usage throttle limit.  If a cgroup's physical
+	swap usage exceeds this limit, all its further allocations will
+	be throttled to allow userspace to implement custom
+	out-of-memory procedures.
 
 	This limit marks a point of no return for the cgroup. It is NOT
 	designed to manage the amount of swapping a workload does
@@ -1863,8 +1864,9 @@ The following nested keys are defined.
   memory.swap.peak
 	A read-write single value file which exists on non-root cgroups.
 
-	The max swap usage recorded for the cgroup and its descendants since
-	the creation of the cgroup or the most recent reset for that FD.
+	The max physical swap usage recorded for the cgroup and its
+	descendants since the creation of the cgroup or the most recent
+	reset for that FD.
 
 	A write of any non-empty string to this file resets it to the
 	current memory usage for subsequent reads through the same
@@ -1874,8 +1876,9 @@ The following nested keys are defined.
 	A read-write single value file which exists on non-root
 	cgroups.  The default is "max".
 
-	Swap usage hard limit.  If a cgroup's swap usage reaches this
-	limit, anonymous memory of the cgroup will not be swapped out.
+	Physical swap usage hard limit.  If a cgroup's physical swap
+	usage reaches this limit, anonymous memory of the cgroup will
+	not be swapped out to a physical swap device.
 
   memory.swap.events
 	A read-only flat-keyed file which exists on non-root cgroups.
@@ -1884,22 +1887,23 @@ The following nested keys are defined.
 	modified event.
 
 	  high
-		The number of times the cgroup's swap usage was over
-		the high threshold.
+		The number of times the cgroup's physical swap usage
+		was over the high threshold.
 
 	  max
-		The number of times the cgroup's swap usage was about
-		to go over the max boundary and swap allocation
-		failed.
+		The number of times the cgroup's physical swap usage
+		was about to go over the max boundary and physical
+		swap allocation failed.
 
 	  fail
-		The number of times swap allocation failed either
-		because of running out of swap system-wide or max
-		limit.
+		The number of times physical swap allocation failed
+		either because of running out of physical swap
+		system-wide or max limit.
 
-	When reduced under the current usage, the existing swap
-	entries are reclaimed gradually and the swap usage may stay
-	higher than the limit for an extended period of time.  This
+	When reduced under the current usage, the existing physical
+	swap entries are reclaimed gradually and the physical swap
+	usage may stay higher than the limit for an extended period of
+	time.  This
 	reduces the impact on the workload and memory management.
 
   memory.zswap.current

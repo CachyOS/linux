@@ -523,7 +523,7 @@ bool workingset_test_recent(void *shadow, bool file, bool *workingset,
 		workingset_size += lruvec_page_state(eviction_lruvec,
 						     NR_INACTIVE_FILE);
 	}
-	if (mem_cgroup_get_nr_swap_pages(eviction_memcg) > 0) {
+	if (mem_cgroup_can_swap(eviction_memcg, 1)) {
 		workingset_size += lruvec_page_state(eviction_lruvec,
 						     NR_ACTIVE_ANON);
 		if (file) {
