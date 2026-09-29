@@ -61,6 +61,7 @@
 #include <linux/cpuhotplug.h>
 #include <linux/mc146818rtc.h>
 #include <linux/acpi.h>
+#include <linux/clocksource.h>
 
 #include <asm/acpi.h>
 #include <asm/cacheinfo.h>
@@ -1258,6 +1259,7 @@ void arch_thaw_secondary_cpus_begin(void)
 
 void arch_thaw_secondary_cpus_end(void)
 {
+	clocksource_touch_watchdog();
 	cache_aps_init();
 }
 
@@ -1278,6 +1280,8 @@ void __init native_smp_prepare_boot_cpu(void)
 void __init native_smp_cpus_done(unsigned int max_cpus)
 {
 	pr_debug("Boot done\n");
+
+	clocksource_touch_watchdog();
 
 	build_sched_topology();
 	nmi_selftest();

@@ -93,6 +93,7 @@ extern unsigned long native_calibrate_tsc(void);
 extern unsigned long long native_sched_clock_from_tsc(u64 tsc);
 
 extern int tsc_clocksource_reliable;
+extern int tsc_allow_direct_sync;
 extern bool tsc_async_resets;
 
 /*
