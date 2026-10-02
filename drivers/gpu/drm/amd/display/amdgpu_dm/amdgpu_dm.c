@@ -617,6 +617,8 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
 	retrieve_dmi_info(&adev->dm);
 	if (adev->dm.edp0_on_dp1_quirk)
 		init_data.flags.support_edp0_on_dp1 = true;
+	if (adev->dm.imac5K_support)
+		init_data.flags.imac5K_support = true;
 
 	if (adev->dm.bb_from_dmub)
 		init_data.bb_from_dmub = adev->dm.bb_from_dmub;
@@ -1925,6 +1927,11 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
 		dc_exit_ips_for_hw_access(dm->dc);
 		WARN_ON(!dc_commit_streams(dm->dc, &commit_params));
 
+		if (dm->dc->config.imac5K_using_5K) {
+			const u8 value = 1;
+
+			core_link_write_dpcd(dm->dc->links[0], 0x4F1, &value, 1);
+		}
 		dm_gpureset_commit_state(dm->cached_dc_state, dm);
 
 		dm_gpureset_toggle_interrupts(adev, dm->cached_dc_state, true);
@@ -2012,11 +2019,20 @@ static int dm_resume(struct amdgpu_ip_block *ip_block)
 		if (!dc_link_detect_connection_type(aconnector->dc_link, &new_connection_type))
 			drm_err(adev_to_drm(adev), "KMS: Failed to detect connector\n");
 
-		if (aconnector->base.force && new_connection_type == dc_connection_none) {
+		if ((aconnector->base.force && new_connection_type == dc_connection_none)
+				|| (dm->dc->config.imac5K_support &&
+					!dm->dc->config.imac5K_using_5K &&
+					aconnector->dc_link->link_index == 1)) {
 			amdgpu_dm_emulated_link_detect(aconnector->dc_link);
 		} else {
 			guard(mutex)(&dm->dc_lock);
 			dc_exit_ips_for_hw_access(dm->dc);
+			if (dm->dc->config.imac5K_using_5K &&
+					aconnector->dc_link->link_index == 1) {
+				const u8 value = 1;
+
+				core_link_write_dpcd(dm->dc->links[0], 0x4F1, &value, 1);
+			}
 			ret = dc_link_detect(aconnector->dc_link, DETECT_REASON_RESUMEFROMS3S4);
 			if (ret) {
 				/* w/a delay for certain panels */
@@ -4627,6 +4643,25 @@ static void amdgpu_dm_commit_streams(struct drm_atomic_commit *state,
 	dc_exit_ips_for_hw_access(dm->dc);
 	WARN_ON(!dc_commit_streams(dm->dc, &params));
 
+	if (dm->imac5K_support) {
+		for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+			dm_new_crtc_state = to_dm_crtc_state(new_crtc_state);
+
+			if (!dm_new_crtc_state->stream)
+				continue;
+
+			if (dm_new_crtc_state->stream->signal != SIGNAL_TYPE_EDP)
+				continue;
+
+			if (new_crtc_state->mode.vdisplay == 2880 && new_crtc_state->mode.hdisplay == 2560) {
+				u8 value = 1;
+
+				core_link_write_dpcd(dm->dc->links[0], 0x4F1, &value, 1);
+				dm->dc->config.imac5K_using_5K = true;
+			} else
+				dm->dc->config.imac5K_using_5K = false;
+		}
+	}
 	bool frl_stream_found = false;
 
 	for (i = 0; i < params.stream_count; i++) {
@@ -5009,6 +5044,14 @@ STATIC_IFN_KUNIT void dm_enable_per_frame_crtc_master_sync(struct dc_state *cont
 		 * crtc_sync_master.multi_sync_enabled flag
 		 * For now it's set to false
 		 */
+	}
+
+	if (context->streams[0]->ctx->dc->config.imac5K_support) {
+		for (i = 0; i < context->stream_count; i++) {
+			stream = context->streams[i];
+			if (stream && stream->link && stream->link->link_index == 1)
+				stream->triggered_crtc_reset.enabled = true;
+		}
 	}
 
 	set_master_stream(context->streams, context->stream_count);

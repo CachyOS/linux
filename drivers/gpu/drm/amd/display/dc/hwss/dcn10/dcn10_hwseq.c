@@ -2675,15 +2675,21 @@ void dcn10_enable_per_frame_crtc_position_reset(
 	struct pipe_ctx *grouped_pipes[])
 {
 	int i;
+	int source_tg_inst = 0;
 
 	DC_LOGGER_INIT(dc->ctx);
 
 	DC_SYNC_INFO("Setting up\n");
+	if (dc->config.imac5K_support &&
+			grouped_pipes[0]->stream ==
+			grouped_pipes[0]->stream->triggered_crtc_reset.event_source)
+		source_tg_inst = grouped_pipes[0]->stream_res.tg->inst;
+
 	for (i = 0; i < group_size; i++)
 		if (grouped_pipes[i]->stream_res.tg->funcs->enable_crtc_reset)
 			grouped_pipes[i]->stream_res.tg->funcs->enable_crtc_reset(
 					grouped_pipes[i]->stream_res.tg,
-					0,
+					source_tg_inst,
 					&grouped_pipes[i]->stream->triggered_crtc_reset);
 
 	DC_SYNC_INFO("Waiting for trigger\n");

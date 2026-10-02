@@ -631,6 +631,8 @@ struct dc_config {
 	struct spl_sharpness_range dcn_sharpness_range;
 	struct spl_sharpness_range dcn_override_sharpness_range;
 	bool no_native422_support;
+	bool imac5K_support;
+	bool imac5K_using_5K;
 };
 
 enum visual_confirm {
