@@ -149,7 +149,7 @@ EXPORT_SYMBOL(iterate_dir);
  */
 static int verify_dirent_name(const char *name, int len)
 {
-	if (len <= 0 || len >= PATH_MAX)
+	if (unlikely(len <= 0 || len >= PATH_MAX))
 		return -EIO;
 	if (memchr(name, '/', len))
 		return -EIO;
