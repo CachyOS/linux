@@ -307,6 +307,15 @@ static void smi_remove(struct platform_device *pdev)
 	smi_devs_unregister(smi);
 }
 
+static const struct smi_node aw88399_hda = {
+	.instances = {
+		{ "aw88399-hda", IRQ_RESOURCE_AUTO, 0 },
+		{ "aw88399-hda", IRQ_RESOURCE_AUTO, 0 },
+		{}
+	},
+	.bus_type = SMI_AUTO_DETECT,
+};
+
 static const struct smi_node bsg1160_data = {
 	.instances = {
 		{ "bmc150_accel", IRQ_RESOURCE_GPIO, 0 },
@@ -400,11 +409,23 @@ static const struct smi_node tas2781_hda = {
 	.bus_type = SMI_AUTO_DETECT,
 };
 
+static const struct smi_node max98390_hda = {
+	.instances = {
+		{ "max98390-hda", IRQ_RESOURCE_NONE, 0 },
+		{ "max98390-hda", IRQ_RESOURCE_NONE, 0 },
+		{ "max98390-hda", IRQ_RESOURCE_NONE, 0 },
+		{ "max98390-hda", IRQ_RESOURCE_NONE, 0 },
+		{}
+	},
+	.bus_type = SMI_I2C,
+};
+
 /*
  * Note new device-ids must also be added to ignore_serial_bus_ids in
  * drivers/acpi/scan.c: acpi_device_enumeration_by_parent().
  */
 static const struct acpi_device_id smi_acpi_ids[] = {
+	{ "AWDZ8399", (unsigned long)&aw88399_hda },
 	{ "BSG1160", (unsigned long)&bsg1160_data },
 	{ "BSG2150", (unsigned long)&bsg2150_data },
 	{ "CSC3551", (unsigned long)&cs35l41_hda },
@@ -412,6 +433,7 @@ static const struct acpi_device_id smi_acpi_ids[] = {
 	{ "CSC3556", (unsigned long)&cs35l56_hda },
 	{ "CSC3557", (unsigned long)&cs35l57_hda },
 	{ "INT3515", (unsigned long)&int3515_data },
+	{ "MAX98390", (unsigned long)&max98390_hda },
 	{ "TXNW2781", (unsigned long)&tas2781_hda },
 	/* Non-conforming _HID for Cirrus Logic already released */
 	{ "CLSA0100", (unsigned long)&cs35l41_hda },
