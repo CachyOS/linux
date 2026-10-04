@@ -33,6 +33,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
+#include <linux/platform_data/x86/apple.h>
 #include <linux/platform_device.h>
 #include <linux/log2.h>
 #include <linux/pm.h>
@@ -943,6 +944,9 @@ cmos_do_probe(struct device *dev, struct resource *ports, int rtc_irq)
 		.reg_write = cmos_nvram_write,
 		.priv = &cmos_rtc,
 	};
+
+	if (IS_ENABLED(CONFIG_RTC_DRV_MACSMC) && has_apple_t2_chip)
+		return -ENODEV;
 
 	/* there can be only one ... */
 	if (cmos_rtc.dev)
