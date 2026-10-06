@@ -19,6 +19,26 @@ menuconfig SWAP
 	  used to provide more virtual memory than the actual RAM present
 	  in your computer.  If unsure say Y.
 
+config VSWAP_DEFAULT_ON
+	bool "Route swapouts through virtual swap by default"
+	depends on SWAP && 64BIT
+	default n
+	help
+	  Virtual swap allows zswap and zero-filled pages to be used
+	  without swapping on a physical device first, and lets a page
+	  move between zswap and a swapfile without invalidating the page
+	  table entries that refer to it.
+
+	  Swap entries are handed out by a virtual swap device instead of
+	  naming a slot on a real one, so the backing can be chosen and
+	  changed after the entry exists.
+
+	  Say Y to make "vswap=on" the default, routing swapouts through
+	  the virtual swap layer from boot.
+
+	  Say N (default) to leave vswap off unless "vswap=on" is passed
+	  on the kernel command line.
+
 config ZSWAP
 	bool "Compressed cache for swap pages"
 	depends on SWAP

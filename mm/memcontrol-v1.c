@@ -690,6 +690,7 @@ void __memcg1_swapout(struct folio *folio, struct swap_cluster_info *ci)
 void memcg1_swapin(struct folio *folio)
 {
 	struct swap_cluster_info *ci;
+	struct mem_cgroup *memcg;
 	unsigned long nr_pages;
 	unsigned short id;
 
@@ -721,7 +722,14 @@ void memcg1_swapin(struct folio *folio)
 	id = __swap_cgroup_clear(ci, swp_cluster_offset(folio->swap),
 				 nr_pages);
 	swap_cluster_unlock(ci);
-	mem_cgroup_uncharge_swap(id, nr_pages);
+
+	rcu_read_lock();
+	memcg = mem_cgroup_from_private_id(id);
+	if (memcg) {
+		mem_cgroup_swap_uncharge(memcg, nr_pages);
+		mem_cgroup_swap_put(memcg, nr_pages);
+	}
+	rcu_read_unlock();
 }
 #endif
 

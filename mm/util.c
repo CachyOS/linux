@@ -33,6 +33,7 @@
 
 #include "internal.h"
 #include "swap.h"
+#include "vswap.h"
 
 /**
  * kfree_const - conditionally free memory
@@ -970,7 +971,17 @@ int __vm_enough_memory(const struct mm_struct *mm, long pages, int cap_sys_admin
 		return 0;
 
 	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
-		if (pages > totalram_pages() + total_swap_pages)
+		allowed = totalram_pages() + total_swap_pages;
+		/*
+		 * Vswap is in neither term, so with no swapfile the bound
+		 * would collapse to RAM alone even though zswap can absorb
+		 * more. Compression swap is backed by memory, so budget a 3x
+		 * compression ratio, typical of most workloads. Anything that
+		 * compresses better can use OVERCOMMIT_ALWAYS.
+		 */
+		if (vswap_is_enabled() && zswap_is_enabled())
+			allowed += 2 * totalram_pages();
+		if (pages > allowed)
 			goto error;
 		return 0;
 	}

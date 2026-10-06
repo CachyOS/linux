@@ -86,6 +86,7 @@ static struct vfsmount *shm_mnt __ro_after_init;
 #include <linux/uaccess.h>
 
 #include "internal.h"
+#include "vswap.h"
 
 #define VM_ACCT(size)    (PAGE_ALIGN(size) >> PAGE_SHIFT)
 
@@ -1618,7 +1619,8 @@ int shmem_writeout(struct swap_io_ctx *ctx, struct folio *folio,
 	if ((info->flags & SHMEM_F_LOCKED) || sbinfo->noswap)
 		goto redirty;
 
-	if (!total_swap_pages)
+	/* vswap doesn't contribute to total_swap_pages */
+	if (!total_swap_pages && !(vswap_is_enabled() && zswap_is_enabled()))
 		goto redirty;
 
 	/*
