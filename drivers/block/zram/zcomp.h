@@ -4,10 +4,16 @@
 #define _ZCOMP_H_
 
 #include <linux/mutex.h>
+#include <linux/rwsem.h>
 
 struct scatterlist;
 
 #define ZCOMP_PARAM_NOT_SET	INT_MIN
+
+enum zcomp_decomp_mode {
+	ZCOMP_DECOMP_INPLACE,
+	ZCOMP_DECOMP_BOUNCE,
+};
 
 struct deflate_params {
 	s32 winbits;
@@ -48,7 +54,8 @@ struct zcomp_cstrm {
 };
 
 struct zcomp_dstrm {
-	struct mutex lock;
+	struct rw_semaphore lock;
+	bool excl_locked;
 	/* local copy of handle memory */
 	void *local_copy;
 	struct zcomp_ctx ctx;
@@ -102,7 +109,8 @@ void zcomp_destroy(struct zcomp *comp);
 struct zcomp_cstrm *zcomp_cstrm_get(struct zcomp *comp);
 void zcomp_cstrm_put(struct zcomp_cstrm *zstrm);
 
-struct zcomp_dstrm *zcomp_dstrm_get(struct zcomp *comp);
+struct zcomp_dstrm *zcomp_dstrm_get(struct zcomp *comp,
+				    enum zcomp_decomp_mode mode);
 void zcomp_dstrm_put(struct zcomp_dstrm *zstrm);
 
 int zcomp_compress(struct zcomp *comp, struct zcomp_cstrm *zstrm,

@@ -181,21 +181,43 @@ void zcomp_cstrm_put(struct zcomp_cstrm *zstrm)
 	mutex_unlock(&zstrm->lock);
 }
 
-struct zcomp_dstrm *zcomp_dstrm_get(struct zcomp *comp)
+struct zcomp_dstrm *zcomp_dstrm_get(struct zcomp *comp,
+				    enum zcomp_decomp_mode mode)
 {
+	/*
+	 * Backends with a per-stream decompression context modify ->ctx
+	 * during decompression and cannot share the stream concurrently.
+	 */
+	if (comp->ops->create_dctx)
+		mode = ZCOMP_DECOMP_BOUNCE;
+
 	for (;;) {
 		struct zcomp_dstrm *zstrm = raw_cpu_ptr(comp->dstream);
 
-		mutex_lock(&zstrm->lock);
-		if (likely(zstrm->local_copy))
-			return zstrm;
-		mutex_unlock(&zstrm->lock);
+		if (mode == ZCOMP_DECOMP_INPLACE) {
+			down_read(&zstrm->lock);
+			if (likely(zstrm->local_copy))
+				return zstrm;
+			up_read(&zstrm->lock);
+		} else {
+			down_write(&zstrm->lock);
+			if (likely(zstrm->local_copy)) {
+				zstrm->excl_locked = true;
+				return zstrm;
+			}
+			up_write(&zstrm->lock);
+		}
 	}
 }
 
 void zcomp_dstrm_put(struct zcomp_dstrm *zstrm)
 {
-	mutex_unlock(&zstrm->lock);
+	if (zstrm->excl_locked) {
+		zstrm->excl_locked = false;
+		up_write(&zstrm->lock);
+	} else {
+		up_read(&zstrm->lock);
+	}
 }
 
 int zcomp_compress(struct zcomp *comp, struct zcomp_cstrm *zstrm,
@@ -235,6 +257,7 @@ int zcomp_decompress(struct zcomp *comp, struct zcomp_dstrm *zstrm,
 		req.src = src + sg->offset;
 	} else {
 		/* the object spans two pages, linearize it into local copy */
+		lockdep_assert_held_write(&zstrm->lock);
 		sg_copy_to_buffer(sg, 2, zstrm->local_copy, src_len);
 		req.src = zstrm->local_copy;
 	}
@@ -287,9 +310,9 @@ int zcomp_cpu_dead(unsigned int cpu, struct hlist_node *node)
 	}
 
 	dstrm = per_cpu_ptr(comp->dstream, cpu);
-	mutex_lock(&dstrm->lock);
+	down_write(&dstrm->lock);
 	zcomp_dstrm_free(comp, dstrm);
-	mutex_unlock(&dstrm->lock);
+	up_write(&dstrm->lock);
 
 	return 0;
 }
@@ -335,7 +358,7 @@ static int zcomp_init(struct zcomp *comp, struct zcomp_params *params,
 	}
 
 	for_each_possible_cpu(cpu)
-		mutex_init(&per_cpu_ptr(comp->dstream, cpu)->lock);
+		init_rwsem(&per_cpu_ptr(comp->dstream, cpu)->lock);
 
 	ret = cpuhp_state_add_instance(CPUHP_ZCOMP_PREPARE, &comp->node);
 	if (ret < 0)
