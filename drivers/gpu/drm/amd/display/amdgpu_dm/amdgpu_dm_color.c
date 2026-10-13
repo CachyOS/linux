@@ -187,7 +187,7 @@ struct fixed31_32 amdgpu_dm_fixpt_from_s3132(__u64 x)
 }
 EXPORT_IF_KUNIT(amdgpu_dm_fixpt_from_s3132);
 
-#ifdef AMD_PRIVATE_COLOR
+#ifdef CONFIG_AMD_PRIVATE_COLOR
 /* Pre-defined Transfer Functions (TF)
  *
  * AMD driver supports pre-defined mathematical functions for transferring
