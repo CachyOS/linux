@@ -859,7 +859,7 @@ static int macsmc_power_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	power->nb.notifier_call = macsmc_power_event;
-	blocking_notifier_chain_register(&smc->event_handlers, &power->nb);
+	blocking_notifier_chain_register(smc->event_handlers, &power->nb);
 
 	return 0;
 }
@@ -868,7 +868,7 @@ static void macsmc_power_remove(struct platform_device *pdev)
 {
 	struct macsmc_power *power = dev_get_drvdata(&pdev->dev);
 
-	blocking_notifier_chain_unregister(&power->smc->event_handlers, &power->nb);
+	blocking_notifier_chain_unregister(power->smc->event_handlers, &power->nb);
 }
 
 static const struct platform_device_id macsmc_power_id[] = {
