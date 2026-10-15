@@ -1044,6 +1044,10 @@ static void init_amd_zen5(struct cpuinfo_x86 *c)
 {
 	if (!x86_match_min_microcode_rev(zen5_rdseed_microcode))
 		pr_emerg_once("RDSEED32 is broken. Please update your firmware.\n");
+
+	if (cpu_has(c, X86_FEATURE_INVLPGB) &&
+	    !cpu_has(c, X86_FEATURE_TLBSYNC_SFW_NO))
+		set_cpu_bug(c, X86_BUG_TLBI);
 }
 
 static void init_amd(struct cpuinfo_x86 *c)
