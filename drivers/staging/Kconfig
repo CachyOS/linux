@@ -46,4 +46,6 @@ source "drivers/staging/axis-fifo/Kconfig"
 
 source "drivers/staging/vme_user/Kconfig"
 
+source "drivers/staging/t2bce/Kconfig"
+
 endif # STAGING
