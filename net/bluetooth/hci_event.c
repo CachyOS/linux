@@ -6467,6 +6467,13 @@ static void hci_le_adv_report_evt(struct hci_dev *hdev, void *data,
 
 		hci_store_wake_reason(hdev, &info->bdaddr, info->bdaddr_type);
 
+		/* Broadcom ROM firmware (BCM4364B3 on Apple T2 Macs, no
+		 * patchram) sets vendor bits in the legacy Event_Type; the
+		 * valid type is in the low nibble.
+		 */
+		if (hdev->manufacturer == 15 && info->type > LE_ADV_SCAN_RSP)
+			info->type &= 0x0f;
+
 		if (info->length <= max_adv_len(hdev)) {
 			rssi = info->data[info->length];
 			process_adv_report(hdev, info->type, &info->bdaddr,

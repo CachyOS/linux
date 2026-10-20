@@ -8,6 +8,8 @@
 #ifndef _LINUX_MFD_MACSMC_H
 #define _LINUX_MFD_MACSMC_H
 
+#include <linux/ioctl.h>
+#include <linux/miscdevice.h>
 #include <linux/soc/apple/rtkit.h>
 
 /**
@@ -47,6 +49,14 @@ typedef u32 smc_key;
 #define APPLE_SMC_WRITABLE BIT(6)
 #define APPLE_SMC_FUNCTION BIT(4)
 
+#define SMC_MSG_READ_KEY                0x10
+#define SMC_MSG_WRITE_KEY               0x11
+#define SMC_MSG_GET_KEY_BY_INDEX        0x12
+#define SMC_MSG_GET_KEY_INFO            0x13
+#define SMC_MSG_INITIALIZE              0x17
+#define SMC_MSG_NOTIFICATION            0x18
+#define SMC_MSG_RW_KEY                  0x20
+
 /**
  * struct apple_smc_key_info - Information for a SMC key as returned by SMC
  * @type_code: FourCC code indicating the type for this key.
@@ -81,25 +91,43 @@ enum apple_smc_boot_stage {
 };
 
 /**
+ * struct apple_smc_backend_ops - SMC backend interface
+ * @read: Read SMC key data
+ * @write: Write SMC key data
+ * @enter_atomic: Enter atomic access mode
+ * @write_atomic: Atomic write to SMC key
+ * @rw: Combined write/read transaction
+ * @get_key_by_index: Resolve key by index
+ * @get_key_info: Get metadata for key
+ * @disable_notifications: Disable notfications on removal
+ */
+struct apple_smc_backend_ops {
+	int (*read)(void *cookie, smc_key key, void *buf, size_t size);
+	int (*write)(void *cookie, smc_key key, const void *buf, size_t size);
+	int (*enter_atomic)(void *cookie);
+	int (*write_atomic)(void *cookie, smc_key key, const void *buf, size_t size);
+	int (*rw)(void *cookie, smc_key key, const void *wbuf, size_t wsize,
+		  void *rbuf, size_t rsize);
+	int (*get_key_by_index)(void *cookie, int index, smc_key *key);
+	int (*get_key_info)(void *cookie, smc_key key,
+			    struct apple_smc_key_info *info);
+	void (*disable_notifications)(void *cookie);
+};
+
+
+/**
  * struct apple_smc
  * @dev: Underlying device struct for the physical backend device
  * @key_count: Number of available SMC keys
  * @first_key: First valid SMC key
  * @last_key: Last valid SMC key
- * @event_handlers: Notifier call chain for events received from SMC
- * @rtk: Pointer to Apple RTKit instance
- * @init_done: Completion for initialization
- * @boot_stage: Current boot stage of SMC
- * @sram: Pointer to SRAM resource
- * @sram_base: SRAM base address
- * @shmem: RTKit shared memory structure for SRAM
- * @msg_id: Current message id for commands, will be incremented for each command
- * @atomic_mode: Flag set when atomic mode is entered
- * @atomic_pending: Flag indicating pending atomic command
- * @cmd_done: Completion for command execution in non-atomic mode
- * @cmd_ret: Return value from SMC for last command
+ * @event_handlers: Pointer to Notifier call chain from the backend
+ * @be: Backend operations for SMC access
+ * @be_cookie: Backend context passed to ops callbacks
+ * @is_acpi: Is the backend ACPI based
  * @mutex: Mutex for non-atomic mode
  * @lock: Spinlock for atomic mode
+ * @miscdev: Misc Device struct for ioctl ops
  */
 struct apple_smc {
 	struct device *dev;
@@ -108,27 +136,39 @@ struct apple_smc {
 	smc_key first_key;
 	smc_key last_key;
 
-	struct blocking_notifier_head event_handlers;
+	struct blocking_notifier_head *event_handlers;
+	const struct apple_smc_backend_ops *be;
+	void *be_cookie;
 
-	struct apple_rtkit *rtk;
-
-	struct completion init_done;
-	enum apple_smc_boot_stage boot_stage;
-
-	struct resource *sram;
-	void __iomem *sram_base;
-	struct apple_rtkit_shmem shmem;
-
-	unsigned int msg_id;
-
-	bool atomic_mode;
-	bool atomic_pending;
-	struct completion cmd_done;
-	u64 cmd_ret;
+	bool is_acpi;
 
 	struct mutex mutex;
 	spinlock_t lock;
+
+	struct miscdevice miscdev;
 };
+
+struct ioctl_smc_rw_payload {
+	smc_key key;
+	size_t size;
+	u8 buf[32];
+};
+
+struct ioctl_smc_index_payload {
+	int index;
+	smc_key key;
+};
+
+struct ioctl_smc_info_payload {
+	smc_key key;
+	struct apple_smc_key_info info;
+};
+
+#define APPLE_SMC_MAGIC 'S'
+#define IOCTL_SMC_READ           _IOWR(APPLE_SMC_MAGIC, 1, struct ioctl_smc_rw_payload)
+#define IOCTL_SMC_WRITE          _IOW(APPLE_SMC_MAGIC, 2, struct ioctl_smc_rw_payload)
+#define IOCTL_SMC_GET_KEY_INDEX  _IOWR(APPLE_SMC_MAGIC, 3, struct ioctl_smc_index_payload)
+#define IOCTL_SMC_GET_KEY_INFO   _IOWR(APPLE_SMC_MAGIC, 4, struct ioctl_smc_info_payload)
 
 /**
  * apple_smc_read - Read size bytes from given SMC key into buf
@@ -224,6 +264,18 @@ static inline bool apple_smc_key_exists(struct apple_smc *smc, smc_key key)
 {
 	return apple_smc_get_key_info(smc, key, NULL) >= 0;
 }
+
+/**
+ * apple_smc_probe - Initialize Apple SMC device
+ * @dev: Device for the SMC instance
+ * @ops: Backend operations for SMC access
+ * @cookie: Opaque backend context
+ * @event_handlers: Pointer to Notifier call chain from backend
+ * @is_acpi: Is the backend ACPI based.
+ * Return: Zero on success, negative errno on error
+ */
+int apple_smc_probe(struct device *dev, const struct apple_smc_backend_ops *ops,
+		void *cookie, struct blocking_notifier_head *event_handlers, bool is_acpi);
 
 #define APPLE_SMC_TYPE_OPS(type) \
 	static inline int apple_smc_read_##type(struct apple_smc *smc, smc_key key, type *p) \
