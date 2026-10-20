@@ -634,4 +634,3 @@ module_platform_driver(apple_smc_acpi_driver);
 MODULE_AUTHOR("Atharva Tiwari <atharvatiwarilinuxdev@gmail.com>");
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_DESCRIPTION("Apple SMC ACPI backend");
-MODULE_DEVICE_TABLE(acpi, apple_smc_acpi_ids);
