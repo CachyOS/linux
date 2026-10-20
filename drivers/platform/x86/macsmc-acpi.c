@@ -218,22 +218,20 @@ static int apple_smc_acpi_mmio_wait(struct apple_smc_acpi *smc)
 	int ms = SMC_TIMEOUT_MS;
 
 	if (smc->interrupt_enabled) {
-		if (wait_for_completion_timeout(&smc->cmd_done, msecs_to_jiffies(SMC_TIMEOUT_MS))
-				<= 0)
-			goto err;
+		if (wait_for_completion_timeout(&smc->cmd_done, msecs_to_jiffies(SMC_TIMEOUT_MS)) > 0)
+			return 0;
 
-		return 0;
-	} else {
-		for (ms = SMC_TIMEOUT_MS; ms != 0; ms--) {
-			if (ioread8(smc->iomem_base + SMC_MMIO_KEY_STATUS) & 0x20)
-				return 0;
-
-			fsleep(1000);
-		}
+		smc->interrupt_enabled = 0;
+		dev_dbg(smc->dev, "mmio/wait: interrupt missed, reverting to polling\n");
 	}
-err:
-	dev_dbg(smc->dev, "mmio/wait: timeout, was using %s\n",
-			smc->interrupt_enabled ? "interrupt" : "polling");
+
+	for (ms = SMC_TIMEOUT_MS; ms != 0; ms--) {
+		if (ioread8(smc->iomem_base + SMC_MMIO_KEY_STATUS) & 0x20)
+			return 0;
+
+		fsleep(1000);
+	}
+	dev_dbg(smc->dev, "mmio/wait: timeout");
 	return -ETIMEDOUT;
 }
 
@@ -613,22 +611,8 @@ static int apple_smc_acpi_resume(struct device *dev)
 	return 0;
 }
 
-static int apple_smc_acpi_poweroff_late(struct device *dev)
-{
-	/*
-	 * NESN is used to inform bridgeOS that we're going
-	 * to shutdown
-	 */
-	struct apple_smc *smc = dev_get_drvdata(dev);
-	u32 val = 0x8C70;
-
-	apple_smc_write(smc, SMC_KEY(NESN), &val, 4);
-	return 0;
-}
-
 static const struct dev_pm_ops apple_smc_acpi_ops = {
 	.resume = apple_smc_acpi_resume,
-	.poweroff_late = apple_smc_acpi_poweroff_late,
 };
 
 static const struct acpi_device_id apple_smc_acpi_ids[] = {
