@@ -36,6 +36,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/platform_data/x86/apple.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/seq_file.h>
@@ -436,7 +437,8 @@ find_active_client(struct list_head *head)
 bool vga_switcheroo_client_probe_defer(struct pci_dev *pdev)
 {
 	if (pci_is_display(pdev)) {
-		if (apple_gmux_present() && !vgasr_priv.handler_flags)
+		if (apple_gmux_present() && !vgasr_priv.handler_flags &&
+		    (pdev != vga_default_device() || has_apple_t2_chip))
 			return true;
 	}
 
