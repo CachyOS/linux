@@ -123,7 +123,7 @@ static void get_ofs_set(qp_set ofs, enum colour_mode mode, float bpp)
 		*p++ = (int)((bpp <= 12) ? (-8) : ((bpp >= 15) ? (-6) : (-8 + dsc_roundf((bpp - 12) * (2 / 3.0)))));
 		*p++ = (int)((bpp <= 12) ? (-10) : ((bpp >= 15) ? (-8) : (-10 + dsc_roundf((bpp - 12) * (2 / 3.0)))));
 		*p++ = -10;
-		*p++ = (int)((bpp <=  6) ? (-12) : ((bpp >=  8) ? (-10) : (-12 + dsc_roundf((bpp -  6) * (2 / 2.0)))));
+		*p++ = (int)((bpp <=  6) ? (-12) : ((bpp >=  8) ? (-12) : (-12 + dsc_roundf((bpp -  6) * (2 / 2.0)))));
 		*p++ = -12;
 		*p++ = -12;
 		*p++ = -12;
@@ -257,4 +257,3 @@ void _do_calc_rc_params(struct rc_params *rc,
 	rc->rc_buf_thresh[12] = 8000;
 	rc->rc_buf_thresh[13] = 8064;
 }
-
