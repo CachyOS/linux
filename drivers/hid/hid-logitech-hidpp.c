@@ -214,6 +214,8 @@ struct hidpp_device {
 	int hires_wheel_multiplier;
 	u8 hires_wheel_feature_index;
 
+	struct hidpp_ff_private_data *ff_config;
+
 	bool connected_once;
 };
 
@@ -4094,19 +4096,16 @@ static int hidpp_input_configured(struct hid_device *hdev, struct hid_input *hid
 		return 0;
 
 	if (hidpp->quirks & HIDPP_QUIRK_CLASS_G920) {
-		struct hidpp_ff_private_data data;
-
 		if (!list_is_first(&hidinput->list, &hdev->inputs))
 			return 0;
 
-		ret = g920_get_config(hidpp, &data);
-		if (!ret)
-			ret = hidpp_ff_init(hidpp, &data);
-
-		if (ret) {
-			hid_warn(hidpp->hid_dev,
-				 "Unable to initialize force feedback support, errno %d\n",
-				 ret);
+		/* The config was read in probe(), IO is stopped here */
+		if (hidpp->ff_config) {
+			ret = hidpp_ff_init(hidpp, hidpp->ff_config);
+			if (ret)
+				hid_warn(hidpp->hid_dev,
+					 "Unable to initialize force feedback support, errno %d\n",
+					 ret);
 		}
 	}
 
@@ -4806,6 +4805,24 @@ static int hidpp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	if (hidpp->quirks & HIDPP_QUIRK_DELAYED_INIT)
 		connect_mask &= ~HID_CONNECT_HIDINPUT;
+
+	/*
+	 * Force feedback is set up from .input_configured(), which runs from
+	 * hid_connect() with IO stopped, so the device's replies cannot be
+	 * received there. Read the config while IO is still enabled.
+	 */
+	if (hidpp->quirks & HIDPP_QUIRK_CLASS_G920) {
+		struct hidpp_ff_private_data *data;
+
+		data = devm_kzalloc(&hdev->dev, sizeof(*data), GFP_KERNEL);
+		ret = data ? g920_get_config(hidpp, data) : -ENOMEM;
+		if (ret)
+			hid_warn(hdev,
+				 "Unable to initialize force feedback support, errno %d\n",
+				 ret);
+		else
+			hidpp->ff_config = data;
+	}
 
 	/* Now export the actual inputs and hidraw nodes to the world */
 	hid_device_io_stop(hdev);
