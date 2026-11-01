@@ -13,6 +13,7 @@
 #include <linux/io.h>
 #include <linux/kfifo.h>
 #include <linux/mfd/macsmc.h>
+#include <linux/platform_data/x86/apple.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/spinlock.h>
@@ -574,6 +575,10 @@ static int apple_smc_acpi_probe(struct platform_device *pdev)
 	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
 	struct apple_smc_acpi *smc;
 	acpi_status status;
+
+	/* Pre-T2 Macs are handled by the applesmc driver */
+	if (!has_apple_t2_chip)
+		return -ENODEV;
 
 	smc = devm_kzalloc(&pdev->dev, sizeof(*smc), GFP_KERNEL);
 	if (!smc)

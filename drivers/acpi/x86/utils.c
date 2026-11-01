@@ -609,7 +609,7 @@ bool acpi_quirk_skip_acpi_ac_and_battery(void)
 	long quirks = 0;
 	int i;
 
-	if (IS_ENABLED(CONFIG_MACSMC_POWER) && x86_apple_machine)
+	if (IS_ENABLED(CONFIG_MACSMC_POWER) && has_apple_t2_chip)
 		return true;
 
 	dmi_id = dmi_first_match(acpi_quirk_skip_dmi_ids);

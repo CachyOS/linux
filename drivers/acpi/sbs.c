@@ -634,7 +634,7 @@ static int acpi_sbs_probe(struct platform_device *pdev)
 	int result = 0;
 	int id;
 
-	if (IS_ENABLED(CONFIG_MACSMC_POWER) && x86_apple_machine)
+	if (IS_ENABLED(CONFIG_MACSMC_POWER) && has_apple_t2_chip)
 		return -ENODEV;
 
 	device = ACPI_COMPANION(&pdev->dev);
@@ -660,12 +660,14 @@ static int acpi_sbs_probe(struct platform_device *pdev)
 
 	result = 0;
 
-	result = acpi_manager_get_info(sbs);
-	if (!result) {
-		sbs->manager_present = 1;
-		for (id = 0; id < MAX_SBS_BAT; ++id)
-			if ((sbs->batteries_supported & (1 << id)))
-				acpi_battery_add(sbs, id);
+	if (!x86_apple_machine) {
+		result = acpi_manager_get_info(sbs);
+		if (!result) {
+			sbs->manager_present = 1;
+			for (id = 0; id < MAX_SBS_BAT; ++id)
+				if ((sbs->batteries_supported & (1 << id)))
+					acpi_battery_add(sbs, id);
+		}
 	}
 
 	if (!sbs->manager_present)

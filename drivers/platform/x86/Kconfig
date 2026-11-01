@@ -204,7 +204,7 @@ config ADV_SWBUTTON
 
 config MACSMC_ACPI
 	tristate "Apple SMC (System Management Controller) ACPI Backend"
-	depends on MFD_MACSMC_CORE && ACPI && !SENSORS_APPLESMC
+	depends on MFD_MACSMC_CORE && ACPI && X86
 	help
 	  This driver allows communication with the SMC (System Management Controller)
 	  on Intel-Macs. It is used to control fans, control battery, and more.
