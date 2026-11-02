@@ -5140,6 +5140,7 @@ Kernel parameters
 				id:nnnn:nnnn
 					Specfic device - full ACS capabilities
 					Specified as vid:did (vendor/device ID) in hex
+				Only available with CONFIG_PCI_ACS_OVERRIDE=y.
 		noioapicquirk	[APIC] Disable all boot interrupt quirks.
 				Safety option to keep boot IRQs enabled. This
 				should never be necessary.
