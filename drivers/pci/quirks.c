@@ -3783,6 +3783,7 @@ static void quirk_no_bus_reset(struct pci_dev *dev)
 	dev->dev_flags |= PCI_DEV_FLAGS_NO_BUS_RESET;
 }
 
+#ifdef CONFIG_PCI_ACS_OVERRIDE
 static bool acs_on_downstream;
 static bool acs_on_multifunction;
 
@@ -3883,6 +3884,8 @@ static int pcie_acs_overrides(struct pci_dev *dev, u16 acs_flags)
 
 	return -ENOTTY;
 }
+#endif /* CONFIG_PCI_ACS_OVERRIDE */
+
 /*
  * After asserting Secondary Bus Reset to downstream devices via a GB10
  * Root Port, the link may not retrain correctly.
@@ -5498,7 +5501,9 @@ static const struct pci_dev_acs_enabled {
 	{ PCI_VENDOR_ID_ZHAOXIN, PCI_ANY_ID, pci_quirk_zhaoxin_pcie_ports_acs },
 	/* Wangxun nics */
 	{ PCI_VENDOR_ID_WANGXUN, PCI_ANY_ID, pci_quirk_wangxun_nic_acs },
+#ifdef CONFIG_PCI_ACS_OVERRIDE
 	{ PCI_ANY_ID, PCI_ANY_ID, pcie_acs_overrides },
+#endif
 	{ 0 }
 };
 
