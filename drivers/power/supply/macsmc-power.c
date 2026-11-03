@@ -548,7 +548,8 @@ static int macsmc_battery_acpi_read(struct apple_smc *smc, smc_key key, int *val
 	}
 
 	default:
-		return -EOPNOTSUPP;
+		/* Unknown type: let the power_supply core skip this property */
+		return -ENODATA;
 	}
 
 	return 0;
