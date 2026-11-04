@@ -27,8 +27,22 @@ static __always_inline bool syscall_user_dispatch_clear_on_dispatch(void)
 int set_syscall_user_dispatch(unsigned long mode, unsigned long offset,
 			      unsigned long len, char __user *selector);
 
-#define clear_syscall_work_syscall_user_dispatch(tsk) \
-	clear_task_syscall_work(tsk, SYSCALL_USER_DISPATCH)
+int set_syscall_user_dispatch_handler(unsigned long handler);
+
+/*
+ * Reset per-task Syscall User Dispatch state on clone (copy_process) and
+ * exec.  The upcall handler is per-task state and is never inherited: a
+ * stale handler address must not carry into a different binary (think
+ * setuid exec), and each new thread registers its own handler before
+ * arming upcall mode.
+ */
+static inline void clear_syscall_work_syscall_user_dispatch(struct task_struct *tsk)
+{
+	clear_task_syscall_work(tsk, SYSCALL_USER_DISPATCH);
+	tsk->syscall_dispatch.handler = 0;
+	tsk->syscall_dispatch.on_dispatch = false;
+	tsk->syscall_dispatch.on_upcall = false;
+}
 
 int syscall_user_dispatch_get_config(struct task_struct *task, unsigned long size,
 				     void __user *data);
@@ -50,6 +64,11 @@ static __always_inline bool syscall_user_dispatch_clear_on_dispatch(void)
 
 static inline int set_syscall_user_dispatch(unsigned long mode, unsigned long offset,
 					    unsigned long len, char __user *selector)
+{
+	return -EINVAL;
+}
+
+static inline int set_syscall_user_dispatch_handler(unsigned long handler)
 {
 	return -EINVAL;
 }

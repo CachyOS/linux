@@ -10,7 +10,9 @@ struct syscall_user_dispatch {
 	char __user	*selector;
 	unsigned long	offset;
 	unsigned long	len;
+	unsigned long	handler;	/* user address jumped to on block when on_upcall */
 	bool		on_dispatch;
+	bool		on_upcall;	/* dispatch bypasses SIGSYS, jumps to handler */
 };
 
 #else
