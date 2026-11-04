@@ -1030,6 +1030,7 @@ static void init_amd_zen4(struct cpuinfo_x86 *c)
 	}
 }
 
+#ifndef CONFIG_CACHY
 static const struct x86_cpu_id zen5_rdseed_microcode[] = {
 	ZEN_MODEL_STEP_UCODE(0x1a, 0x02, 0x1, 0x0b00215a),
 	ZEN_MODEL_STEP_UCODE(0x1a, 0x08, 0x1, 0x0b008121),
@@ -1055,6 +1056,11 @@ static void init_amd_zen5(struct cpuinfo_x86 *c)
 	    !cpu_has(c, X86_FEATURE_TLBSYNC_SFW_NO))
 		set_cpu_bug(c, X86_BUG_TLBI);
 }
+#else
+static void init_amd_zen5(struct cpuinfo_x86 *c)
+{
+}
+#endif /* !CONFIG_CACHY */
 
 static void init_amd(struct cpuinfo_x86 *c)
 {
