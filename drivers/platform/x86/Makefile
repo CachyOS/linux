@@ -28,6 +28,7 @@ obj-y				+= amd/
 obj-$(CONFIG_ADV_SWBUTTON)	+= adv_swbutton.o
 
 # Apple
+obj-$(CONFIG_MACSMC_ACPI)	+= macsmc-acpi.o
 obj-$(CONFIG_APPLE_GMUX)	+= apple-gmux.o
 
 # ASUS
