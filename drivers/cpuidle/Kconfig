@@ -44,6 +44,30 @@ config CPU_IDLE_GOV_HALTPOLL
 
 	  Some virtualized workloads benefit from using it.
 
+config CPU_IDLE_GOV_NAP
+	bool "Neural Adaptive Predictor (NAP) governor"
+	depends on X86_64
+	depends on CC_IS_CLANG || GCC_VERSION >= 120000
+	default y
+	help
+	  A machine-learning-based cpuidle governor.  A small neural
+	  network (11 features, piecewise-linear time embeddings, 32 hidden
+	  units, 16 outputs) predicts the survival function of the upcoming
+	  idle time on a fixed time grid, so it does not depend on the
+	  idle-state table of the machine.  The governor then picks
+	  the idle state and whether to stop the tick that maximise the
+	  expected energy saving under a user-set budget for the share of
+	  the time lost to avoidable wakeup latency
+	  (/sys/devices/system/cpu/nap/budget_ppm).  Weights are
+	  pre-trained and refined by online SGD.  The network runs on
+	  scalar, SSE2, AVX2+FMA or AVX-512 code (max_simd), each verified
+	  against the trained model at boot.
+
+	  This is experimental. Select via cpuidle.governor=nap on
+	  the kernel command line.
+
+	  If unsure, say Y.
+
 config DT_IDLE_STATES
 	bool
 

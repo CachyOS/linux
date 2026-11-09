@@ -3204,7 +3204,7 @@ static inline void __attach_tasks(struct rq *rq, struct list_head *tasks)
 	}
 }
 
-#ifdef CONFIG_PREEMPT_RT
+#if defined(CONFIG_PREEMPT_RT) || defined(CONFIG_CACHY)
 # define SCHED_NR_MIGRATE_BREAK 8
 #else
 # define SCHED_NR_MIGRATE_BREAK 32

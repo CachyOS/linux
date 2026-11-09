@@ -55,8 +55,13 @@ SCHED_FEAT(CACHE_HOT_BUDDY, true)
  *
  * DELAY_ZERO clips the lag on dequeue (or wakeup) to 0.
  */
+#ifdef CONFIG_CACHY
+SCHED_FEAT(DELAY_DEQUEUE, false)
+SCHED_FEAT(DELAY_ZERO, false)
+#else
 SCHED_FEAT(DELAY_DEQUEUE, true)
 SCHED_FEAT(DELAY_ZERO, true)
+#endif
 
 SCHED_FEAT(PARANOID_AVG, false)
 
