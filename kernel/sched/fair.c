@@ -5171,7 +5171,12 @@ static long calc_up_shares(struct cfs_rq *cfs_rq)
 	return READ_ONCE(tg->shares);
 }
 
+#ifdef CONFIG_CACHY
+DEFINE_STATIC_CALL(calc_group_shares, calc_max_shares);
+#else
 DEFINE_STATIC_CALL(calc_group_shares, calc_concur_shares);
+#endif
+
 
 void __sched_cgroup_mode_update(int mode)
 {
