@@ -685,6 +685,14 @@ bool resource_are_streams_timing_synchronizable(
 	struct dc_stream_state *stream1,
 	struct dc_stream_state *stream2)
 {
+
+	if (stream1->ctx->dc->config.imac5K_support &&
+		((stream1->signal == SIGNAL_TYPE_EDP && stream2->signal == SIGNAL_TYPE_DISPLAY_PORT &&
+		stream2->link->link_index == 1) ||
+		(stream2->signal == SIGNAL_TYPE_EDP && stream1->signal == SIGNAL_TYPE_DISPLAY_PORT &&
+		stream1->link->link_index == 1)))
+		return true;
+
 	if (stream1->timing.h_total != stream2->timing.h_total)
 		return false;
 

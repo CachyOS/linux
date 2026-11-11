@@ -21,6 +21,7 @@
  *
  */
 
+#include <linux/dmi.h>
 #include <linux/firmware.h>
 #include <linux/kernfs.h>
 
@@ -3082,6 +3083,22 @@ static int amdgpu_discovery_set_isp_ip_blocks(struct amdgpu_device *adev)
 	return 0;
 }
 
+static const struct dmi_system_id imac5k_table[] = {
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "iMac20,1"),
+		},
+	},
+	{
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "iMac20,2"),
+		},
+	},
+	{}
+};
+
 int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 {
 	int r;
@@ -3679,15 +3696,23 @@ int amdgpu_discovery_set_ip_blocks(struct amdgpu_device *adev)
 		}
 	}
 
+	if (unlikely(dmi_check_system(imac5k_table))) {
+		r = amdgpu_discovery_set_display_ip_blocks(adev);
+		if (r)
+			return r;
+	}
+
 	if (likely(adev->firmware.load_type == AMDGPU_FW_LOAD_PSP)) {
 		r = amdgpu_discovery_set_smu_ip_blocks(adev);
 		if (r)
 			return r;
 	}
 
-	r = amdgpu_discovery_set_display_ip_blocks(adev);
-	if (r)
-		return r;
+	if (likely(!dmi_check_system(imac5k_table))) {
+		r = amdgpu_discovery_set_display_ip_blocks(adev);
+		if (r)
+			return r;
+	}
 
 	r = amdgpu_discovery_set_gc_ip_blocks(adev);
 	if (r)
