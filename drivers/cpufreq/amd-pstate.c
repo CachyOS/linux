@@ -29,6 +29,7 @@
 #include <linux/smp.h>
 #include <linux/sched.h>
 #include <linux/cpufreq.h>
+#include <linux/sched/smt.h>
 #include <linux/compiler.h>
 #include <linux/dmi.h>
 #include <linux/slab.h>
@@ -39,6 +40,8 @@
 #include <linux/power_supply.h>
 #include <linux/static_call.h>
 #include <linux/topology.h>
+#include <linux/cpuset.h>
+#include <linux/amd-pstate.h>
 
 #include <acpi/processor.h>
 #include <acpi/cppc_acpi.h>
@@ -86,6 +89,10 @@ static struct cpufreq_driver amd_pstate_driver;
 static struct cpufreq_driver amd_pstate_epp_driver;
 static int cppc_state = AMD_PSTATE_UNDEFINED;
 static bool amd_pstate_prefcore = true;
+static bool amd_pstate_cas = true;
+static bool amd_pstate_cas_initialized;
+static u32 amd_pstate_ref_freq_khz;
+static u32 amd_pstate_ref_highest_perf;
 static struct quirk_entry *quirks;
 
 /*
@@ -957,8 +964,8 @@ static void amd_pstate_init_prefcore(struct amd_cpudata *cpudata)
 		return;
 
 	/* should use amd-hfi instead */
-	if (cpu_feature_enabled(X86_FEATURE_AMD_WORKLOAD_CLASS) &&
-	    IS_ENABLED(CONFIG_AMD_HFI)) {
+	if ((cpu_feature_enabled(X86_FEATURE_AMD_WORKLOAD_CLASS) &&
+	     IS_ENABLED(CONFIG_AMD_HFI)) || amd_pstate_cas) {
 		amd_pstate_prefcore = false;
 		return;
 	}
@@ -967,6 +974,64 @@ static void amd_pstate_init_prefcore(struct amd_cpudata *cpudata)
 
 	/* Priorities must be initialized before ITMT support can be toggled on. */
 	sched_set_itmt_core_prio((int)READ_ONCE(cpudata->prefcore_ranking), cpudata->cpu);
+}
+
+bool amd_pstate_cas_active(void)
+{
+	return READ_ONCE(amd_pstate_cas_initialized);
+}
+EXPORT_SYMBOL_GPL(amd_pstate_cas_active);
+
+static bool __init amd_pstate_init_cas(void)
+{
+	int highest_perf, max_freq;
+
+	highest_perf = amd_get_effective_highest_perf(0);
+	if (highest_perf <= 0) {
+		pr_warn("Invalid reference highest performance (%d)\n", highest_perf);
+		return false;
+	}
+
+	max_freq = amd_get_max_frequency(0);
+	if (max_freq < 0 || (u32)max_freq > U32_MAX / 1000) {
+		pr_warn("Invalid reference maximum frequency (%d)\n", max_freq);
+		return false;
+	}
+
+	amd_pstate_ref_highest_perf = highest_perf;
+	amd_pstate_ref_freq_khz = max_freq * 1000U;
+
+	return arch_enable_hybrid_capacity_scale();
+}
+
+static void amd_pstate_set_cpu_capacity(struct amd_cpudata *cpudata,
+					bool highest_freq_available)
+{
+	unsigned long capacity, max_capacity, capacity_freq, base_freq;
+
+	if (!IS_ENABLED(CONFIG_SMP))
+		return;
+
+	if (highest_freq_available && amd_pstate_ref_freq_khz) {
+		capacity = cpudata->max_freq;
+		max_capacity = amd_pstate_ref_freq_khz;
+		capacity_freq = capacity;
+		base_freq = max_capacity;
+	} else {
+		union perf_cached perf = READ_ONCE(cpudata->perf);
+
+		capacity = perf.highest_perf;
+		max_capacity = amd_pstate_ref_highest_perf;
+		capacity_freq = perf_to_freq(perf, cpudata->nominal_freq, perf.highest_perf);
+		base_freq = perf_to_freq(perf, cpudata->nominal_freq, max_capacity);
+	}
+
+	guard(mutex)(&sched_domains_mutex);
+	arch_set_cpu_capacity(cpudata->cpu, capacity, max_capacity,
+			      capacity_freq, base_freq);
+	topology_set_cpu_scale(cpudata->cpu, arch_scale_cpu_capacity(cpudata->cpu));
+	x86_topology_update = true;
+	WRITE_ONCE(amd_pstate_cas_initialized, true);
 }
 
 static void amd_pstate_update_limits(struct cpufreq_policy *policy)
@@ -1043,6 +1108,7 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
 	u32 min_freq, max_freq, nominal_freq, lowest_nonlinear_freq;
 	struct cppc_perf_caps cppc_perf;
 	union perf_cached perf;
+	bool highest_freq_available;
 	int ret;
 
 	ret = cppc_get_perf_caps(cpudata->cpu, &cppc_perf);
@@ -1069,6 +1135,7 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
 
 	/* try to look up from BIOS/quirk first, fall back to (nominal_freq * highest_perf)/nominal_perf */
 	max_freq = amd_get_max_frequency(cpudata->cpu) * 1000;
+	highest_freq_available = !!max_freq;
 	if (!max_freq)
 		max_freq = perf_to_freq(perf, nominal_freq, perf.highest_perf);
 	WRITE_ONCE(cpudata->max_freq, max_freq);
@@ -1099,6 +1166,9 @@ static int amd_pstate_init_freq(struct amd_cpudata *cpudata)
 		pr_debug("Found Requested CPU Min Frequency of %uKHz on CPU%d\n",
 			 bios_min_freq, cpudata->cpu);
 	}
+
+	if (amd_pstate_cas)
+		amd_pstate_set_cpu_capacity(cpudata, highest_freq_available);
 
 	return 0;
 }
@@ -1923,12 +1993,20 @@ static ssize_t prefcore_show(struct device *dev,
 	return sysfs_emit(buf, "%s\n", str_enabled_disabled(amd_pstate_prefcore));
 }
 
+static ssize_t cas_show(struct device *dev,
+			struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%s\n", str_enabled_disabled(amd_pstate_cas_active()));
+}
+
 static DEVICE_ATTR_RW(status);
 static DEVICE_ATTR_RO(prefcore);
+static DEVICE_ATTR_RO(cas);
 
 static struct attribute *pstate_global_attributes[] = {
 	&dev_attr_status.attr,
 	&dev_attr_prefcore.attr,
+	&dev_attr_cas.attr,
 	NULL
 };
 
@@ -2438,11 +2516,22 @@ static int __init amd_pstate_init(void)
 			return ret;
 	}
 
+	amd_pstate_cas = amd_pstate_cas && IS_ENABLED(CONFIG_SMP) &&
+			cpu_feature_enabled(X86_FEATURE_AMD_HTR_CORES);
+
+	/* Enable CAS for processors with heterogeneous cores. */
+	if (amd_pstate_cas)
+		amd_pstate_cas = amd_pstate_init_cas();
+
 	ret = amd_pstate_register_driver(cppc_state);
 	if (ret) {
 		pr_err("failed to register with return %d\n", ret);
 		return ret;
 	}
+
+	/* Per-CPU capacities are set during registration; rebuild domains once. */
+	if (amd_pstate_cas)
+		rebuild_sched_domains();
 
 	dev_root = bus_get_dev_root(&cpu_subsys);
 	if (dev_root) {
@@ -2484,8 +2573,17 @@ static int __init amd_prefcore_param(char *str)
 	return 0;
 }
 
+static int __init amd_cas_param(char *str)
+{
+	if (!strcmp(str, "disable"))
+		amd_pstate_cas = false;
+
+	return 0;
+}
+
 early_param("amd_pstate", amd_pstate_param);
 early_param("amd_prefcore", amd_prefcore_param);
+early_param("amd_cas", amd_cas_param);
 
 MODULE_AUTHOR("Huang Rui <ray.huang@amd.com>");
 MODULE_DESCRIPTION("AMD Processor P-state Frequency Driver");
