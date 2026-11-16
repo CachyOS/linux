@@ -146,4 +146,4 @@ SCHED_FEAT(LATENCY_WARN, false)
  * Do newidle balancing proportional to its success rate using randomization.
  */
 SCHED_FEAT(NI_RANDOM, true)
-SCHED_FEAT(NI_RATE, true)
+SCHED_FEAT(NI_RATE, false)
