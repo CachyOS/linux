@@ -33,6 +33,7 @@
 #include <linux/workqueue.h>
 #include <linux/err.h>
 #include <linux/bits.h>
+#include <linux/platform_data/x86/apple.h>
 #include <asm/barrier.h>
 
 /* data port used by Apple SMC */
@@ -1427,6 +1428,12 @@ static int __init applesmc_init(void)
 
 	if (!dmi_check_system(applesmc_whitelist)) {
 		pr_warn("supported laptop not found!\n");
+		ret = -ENODEV;
+		goto out;
+	}
+
+	/* T2 Macs are handled by the macsmc-acpi driver */
+	if (IS_ENABLED(CONFIG_MACSMC_ACPI) && has_apple_t2_chip) {
 		ret = -ENODEV;
 		goto out;
 	}
