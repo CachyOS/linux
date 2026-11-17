@@ -33,6 +33,51 @@ static void trigger_sigsys(struct pt_regs *regs)
 	force_sig_info(&info);
 }
 
+#ifdef CONFIG_X86_64
+/*
+ * The upcall contract mirrors the 64-bit SYSCALL instruction, so it is
+ * only used for native 64-bit syscalls that are not being single-stepped.
+ * ia32 syscalls (int $0x80 / sysenter / 32-bit SYSCALL, including int
+ * $0x80 issued from 64-bit code) and TF-traced ones keep using SIGSYS:
+ * the handler could neither tell the ABI apart nor recover the argument
+ * register that RCX overwrites, a 64-bit handler cannot run on a 32-bit
+ * CS, and with TF set the first handler instruction would trap before it
+ * could save the single-step state the way a SIGSYS handler does.
+ */
+static bool can_upcall(struct syscall_user_dispatch *sd, struct pt_regs *regs)
+{
+	return sd->on_upcall && user_64bit_mode(regs) && !in_ia32_syscall() &&
+	       !(regs->flags & X86_EFLAGS_TF);
+}
+
+static void trigger_upcall(struct pt_regs *regs)
+{
+	/*
+	 * Hand off to the user-mode handler installed via
+	 * PR_SET_SYSCALL_USER_DISPATCH_HANDLER, emulating what SYSCALL
+	 * would do if LSTAR pointed at user code: RCX = address of the
+	 * instruction after the syscall, R11 = RFLAGS.  RAX holds the
+	 * syscall number (restored by syscall_rollback()).  No signal
+	 * frame, no FPU save, signal mask untouched.
+	 *
+	 * regs->cx != regs->ip makes do_syscall_64() take the IRET exit
+	 * path, so every other register is restored unchanged.
+	 */
+	regs->cx = regs->ip;
+	regs->r11 = regs->flags;
+	regs->ip = current->syscall_dispatch.handler;
+}
+#else
+static bool can_upcall(struct syscall_user_dispatch *sd, struct pt_regs *regs)
+{
+	return false;
+}
+
+static void trigger_upcall(struct pt_regs *regs)
+{
+}
+#endif
+
 bool syscall_user_dispatch(struct pt_regs *regs)
 {
 	struct syscall_user_dispatch *sd = &current->syscall_dispatch;
@@ -65,7 +110,10 @@ bool syscall_user_dispatch(struct pt_regs *regs)
 
 	sd->on_dispatch = true;
 	syscall_rollback(current, regs);
-	trigger_sigsys(regs);
+	if (can_upcall(sd, regs))
+		trigger_upcall(regs);
+	else
+		trigger_sigsys(regs);
 
 	return true;
 }
@@ -74,11 +122,16 @@ static int task_set_syscall_user_dispatch(struct task_struct *task, unsigned lon
 					  unsigned long offset, unsigned long len,
 					  char __user *selector)
 {
+	bool upcall = false;
+
 	switch (mode) {
 	case PR_SYS_DISPATCH_OFF:
 		if (offset || len || selector)
 			return -EINVAL;
 		break;
+	case PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON:
+		upcall = true;
+		fallthrough;
 	case PR_SYS_DISPATCH_EXCLUSIVE_ON:
 		/*
 		 * Validate the direct dispatcher region just for basic
@@ -89,6 +142,9 @@ static int task_set_syscall_user_dispatch(struct task_struct *task, unsigned lon
 		if (offset && offset + len <= offset)
 			return -EINVAL;
 		break;
+	case PR_SYS_DISPATCH_UPCALL_INCLUSIVE_ON:
+		upcall = true;
+		fallthrough;
 	case PR_SYS_DISPATCH_INCLUSIVE_ON:
 		if (len == 0 || offset + len <= offset)
 			return -EINVAL;
@@ -101,6 +157,17 @@ static int task_set_syscall_user_dispatch(struct task_struct *task, unsigned lon
 		break;
 	default:
 		return -EINVAL;
+	}
+
+	/*
+	 * Upcall mode is x86_64-only and needs a user-space handler
+	 * installed first (TASK_SIZE_MAX is the exclusive upper bound).
+	 */
+	if (upcall) {
+		unsigned long handler = task->syscall_dispatch.handler;
+
+		if (!IS_ENABLED(CONFIG_X86_64) || !handler || handler >= TASK_SIZE_MAX)
+			return -EINVAL;
 	}
 
 	/* Arming can be denied at runtime via sysctl, disarming is allowed */
@@ -124,6 +191,7 @@ static int task_set_syscall_user_dispatch(struct task_struct *task, unsigned lon
 	task->syscall_dispatch.offset = offset;
 	task->syscall_dispatch.len = len;
 	task->syscall_dispatch.on_dispatch = false;
+	task->syscall_dispatch.on_upcall = upcall;
 
 	if (mode != PR_SYS_DISPATCH_OFF)
 		set_task_syscall_work(task, SYSCALL_USER_DISPATCH);
@@ -139,6 +207,22 @@ int set_syscall_user_dispatch(unsigned long mode, unsigned long offset,
 	return task_set_syscall_user_dispatch(current, mode, offset, len, selector);
 }
 
+int set_syscall_user_dispatch_handler(unsigned long handler)
+{
+	struct syscall_user_dispatch *sd = &current->syscall_dispatch;
+
+	/* Must be a user address (0 is the "clear" sentinel). */
+	if (handler && handler >= TASK_SIZE_MAX)
+		return -EINVAL;
+
+	/* Can't yank the handler out from under an active upcall arming. */
+	if (!handler && sd->on_upcall)
+		return -EBUSY;
+
+	sd->handler = handler;
+	return 0;
+}
+
 int syscall_user_dispatch_get_config(struct task_struct *task, unsigned long size,
 				     void __user *data)
 {
@@ -148,10 +232,17 @@ int syscall_user_dispatch_get_config(struct task_struct *task, unsigned long siz
 	if (size != sizeof(cfg))
 		return -EINVAL;
 
-	if (test_task_syscall_work(task, SYSCALL_USER_DISPATCH))
-		cfg.mode = PR_SYS_DISPATCH_ON;
-	else
+	/*
+	 * offset/len are stored in exclusive form (the inclusive modes are
+	 * inverted at arm time), so report the exclusive-form mode; a
+	 * get/set round trip then reproduces the exact same configuration.
+	 */
+	if (!test_task_syscall_work(task, SYSCALL_USER_DISPATCH))
 		cfg.mode = PR_SYS_DISPATCH_OFF;
+	else if (sd->on_upcall)
+		cfg.mode = PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON;
+	else
+		cfg.mode = PR_SYS_DISPATCH_ON;
 
 	cfg.offset = sd->offset;
 	cfg.len = sd->len;

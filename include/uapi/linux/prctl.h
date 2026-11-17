@@ -271,6 +271,17 @@ struct prctl_mm_map {
 # define PR_SYS_DISPATCH_EXCLUSIVE_ON	1
 /* Enable dispatch for the specified range */
 # define PR_SYS_DISPATCH_INCLUSIVE_ON	2
+/*
+ * Like the modes above, but a blocked native 64-bit syscall resumes at the
+ * handler registered with PR_SET_SYSCALL_USER_DISPATCH_HANDLER instead of
+ * raising SIGSYS.  See Documentation/admin-guide/syscall-user-dispatch.rst.
+ *
+ * Bit 31 keeps these values clear of future upstream PR_SYS_DISPATCH_*
+ * values, so kernels without upcall support return -EINVAL.
+ */
+# define PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON	(0x80000000U | 3)
+/* Same as above but for the inclusive range */
+# define PR_SYS_DISPATCH_UPCALL_INCLUSIVE_ON	(0x80000000U | 4)
 /* Legacy name for backwards compatibility */
 # define PR_SYS_DISPATCH_ON		PR_SYS_DISPATCH_EXCLUSIVE_ON
 /* The control values for the user space selector when dispatch is enabled */
@@ -415,5 +426,13 @@ struct prctl_mm_map {
 # define PR_CFI_ENABLE		_BITUL(0)
 # define PR_CFI_DISABLE		_BITUL(1)
 # define PR_CFI_LOCK		_BITUL(2)
+
+/*
+ * Register the per-task handler used by PR_SYS_DISPATCH_UPCALL_*_ON.
+ * arg2 is the handler address (0 clears it), arg3-arg5 must be zero.
+ * Clearing the handler while upcall mode is armed fails with -EBUSY;
+ * arming upcall mode without a handler fails with -EINVAL.
+ */
+#define PR_SET_SYSCALL_USER_DISPATCH_HANDLER	0x53554448	/* "SUDH" */
 
 #endif /* _LINUX_PRCTL_H */

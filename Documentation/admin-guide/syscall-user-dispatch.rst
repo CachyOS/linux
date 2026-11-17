@@ -82,6 +82,40 @@ Additionally, a tasks syscall user dispatch configuration can be peeked
 and poked via the PTRACE_(GET|SET)_SYSCALL_USER_DISPATCH_CONFIG ptrace
 requests. This is useful for checkpoint/restart software.
 
+Direct upcall (x86-64)
+----------------------
+
+Delivering every blocked syscall as SIGSYS costs a full signal round
+trip, including saving and restoring the complete extended FPU state.
+Applications that trap at high rates can instead have blocked syscalls
+resume directly at a user-mode handler::
+
+  prctl(PR_SET_SYSCALL_USER_DISPATCH_HANDLER, <handler>, 0, 0, 0)
+  prctl(PR_SET_SYSCALL_USER_DISPATCH, PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON,
+        <offset>, <length>, [selector])
+
+PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON and PR_SYS_DISPATCH_UPCALL_INCLUSIVE_ON
+select the dispatch range like their non-upcall counterparts.  A blocked
+native 64-bit syscall then continues at <handler> with the register state
+the SYSCALL instruction itself produces: RCX holds the address of the
+instruction following the syscall, R11 holds RFLAGS and RAX holds the
+syscall number.  All other registers, the stack, the FPU state and the
+signal mask are left untouched, and no signal is queued.  The handler
+typically emulates the syscall and continues at RCX.
+
+ia32 syscalls (including int $0x80 from 64-bit code) and syscalls issued
+with the trap flag set are still reported with SIGSYS, so a SIGSYS handler
+remains necessary.
+
+The handler is per-task state.  Arming an upcall mode without a handler
+fails with EINVAL, clearing the handler (passing 0) while an upcall mode
+is armed fails with EBUSY, and the handler is reset together with the
+rest of the configuration on clone and exec, so every new thread has to
+register it again.  PTRACE_GET_SYSCALL_USER_DISPATCH_CONFIG reports
+PR_SYS_DISPATCH_UPCALL_EXCLUSIVE_ON for tasks in upcall mode; the handler
+itself is not part of the ptrace configuration, so a restored task must
+register it before the configuration can be applied.
+
 Security Notes
 --------------
 
@@ -96,4 +130,4 @@ address and modify the selector value.  If the use case requires any
 kind of security sandboxing, Seccomp should be used instead.
 
 Any fork or exec of the existing process resets the mechanism to
-PR_SYS_DISPATCH_OFF.
+PR_SYS_DISPATCH_OFF and clears the upcall handler.
