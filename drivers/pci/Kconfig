@@ -67,6 +67,22 @@ config PCI_QUIRKS
 	  Disable this only if your target machine is unaffected by PCI
 	  quirks.
 
+config PCI_ACS_OVERRIDE
+	bool "Allow overriding missing PCIe ACS support"
+	depends on PCI_QUIRKS
+	default y
+	help
+	  This adds the pcie_acs_override= kernel parameter, which treats
+	  PCIe ports and devices without ACS as if they isolate peer-to-peer
+	  DMA. It splits IOMMU groups, for example to pass a single device
+	  to a virtual machine, but the hardware still allows peer-to-peer
+	  DMA that is not translated by the IOMMU.
+
+	  Say N if the IOMMU groups have to match the isolation the hardware
+	  actually provides.
+
+	  If unsure, say Y.
+
 config PCI_DEBUG
 	bool "PCI Debugging"
 	depends on DEBUG_KERNEL
