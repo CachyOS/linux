@@ -29,6 +29,8 @@
 
 #include <asm/cpu_device_id.h>
 
+#include <linux/amd-pstate.h>
+
 #include <acpi/pcc.h>
 #include <acpi/cppc_acpi.h>
 
@@ -535,6 +537,12 @@ static int __init amd_hfi_init(void)
 	    !cpu_feature_enabled(X86_FEATURE_AMD_HTR_CORES) ||
 	    !cpu_feature_enabled(X86_FEATURE_AMD_WORKLOAD_CLASS))
 		return -ENODEV;
+
+	/* amd-pstate CAS owns heterogeneous core scheduling when enabled. */
+	if (amd_pstate_cas_active()) {
+		pr_debug("amd-pstate CAS is active, not loading amd-hfi\n");
+		return -ENODEV;
+	}
 
 	ret = platform_driver_register(&amd_hfi_driver);
 	if (ret)
