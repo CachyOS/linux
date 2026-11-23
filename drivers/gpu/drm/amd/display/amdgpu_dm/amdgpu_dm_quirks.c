@@ -33,11 +33,13 @@
 struct amdgpu_dm_quirks {
 	bool aux_hpd_discon;
 	bool support_edp0_on_dp1;
+	bool imac5K_support;
 };
 
 static struct amdgpu_dm_quirks quirk_entries = {
 	.aux_hpd_discon = false,
-	.support_edp0_on_dp1 = false
+	.support_edp0_on_dp1 = false,
+	.imac5K_support = false,
 };
 
 static int edp0_on_dp1_callback(const struct dmi_system_id *id)
@@ -49,6 +51,12 @@ static int edp0_on_dp1_callback(const struct dmi_system_id *id)
 static int aux_hpd_discon_callback(const struct dmi_system_id *id)
 {
 	quirk_entries.aux_hpd_discon = true;
+	return 0;
+}
+
+static int imac5K_support_callback(const struct dmi_system_id *id)
+{
+	quirk_entries.imac5K_support = true;
 	return 0;
 }
 
@@ -151,6 +159,20 @@ static const struct dmi_system_id dmi_quirk_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "HP ProBook 465 16 inch G11 Notebook PC"),
 		},
 	},
+	{
+		.callback = imac5K_support_callback,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "iMac20,1"),
+		},
+	},
+	{
+		.callback = imac5K_support_callback,
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "iMac20,2"),
+		},
+	},
 	{}
 	/* TODO: refactor this from a fixed table to a dynamic option */
 };
@@ -162,6 +184,7 @@ void retrieve_dmi_info(struct amdgpu_display_manager *dm)
 
 	dm->aux_hpd_discon_quirk = false;
 	dm->edp0_on_dp1_quirk = false;
+	dm->imac5K_support = false;
 
 	dmi_id = dmi_check_system(dmi_quirk_table);
 
@@ -175,6 +198,10 @@ void retrieve_dmi_info(struct amdgpu_display_manager *dm)
 	if (quirk_entries.support_edp0_on_dp1) {
 		dm->edp0_on_dp1_quirk = true;
 		drm_info(dev, "support_edp0_on_dp1 attached\n");
+	}
+	if (quirk_entries.imac5K_support) {
+		dm->imac5K_support = true;
+		drm_info(dev, "imac5K_support attached\n");
 	}
 }
 EXPORT_IF_KUNIT(retrieve_dmi_info);
