@@ -82,6 +82,8 @@ struct ps_led_info {
 #define DS_INPUT_REPORT_USB_SIZE		64
 #define DS_INPUT_REPORT_BT			0x31
 #define DS_INPUT_REPORT_BT_SIZE			78
+#define DS_INPUT_REPORT_BT_TYPE			GENMASK(3, 0)
+#define DS_INPUT_REPORT_BT_TYPE_AUDIO		0x2
 #define DS_OUTPUT_REPORT_USB			0x02
 #define DS_OUTPUT_REPORT_USB_SIZE		63
 #define DS_OUTPUT_REPORT_BT			0x31
@@ -1462,6 +1464,11 @@ static int dualsense_parse_report(struct ps_device *ps_dev, struct hid_report *r
 			hid_err(hdev, "DualSense input CRC's check failed\n");
 			return -EILSEQ;
 		}
+
+		/* Report 0x31 also carries microphone audio, which is not input. */
+		if (FIELD_GET(DS_INPUT_REPORT_BT_TYPE, data[1]) ==
+		    DS_INPUT_REPORT_BT_TYPE_AUDIO)
+			return 0;
 
 		ds_report = (struct dualsense_input_report *)&data[2];
 	} else {
