@@ -690,6 +690,13 @@ struct amdgpu_display_manager {
 	bool edp0_on_dp1_quirk;
 
 	/**
+	 * @imac5K_support:
+	 *
+	 * quirk for iMac that support 5K
+	 */
+	bool imac5K_support;
+
+	/**
 	 * @dpia_aux_lock:
 	 *
 	 * Guards access to DPIA AUX
