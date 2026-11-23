@@ -21,6 +21,7 @@
 #include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/vga_switcheroo.h>
+#include <linux/vgaarb.h>
 #include <linux/debugfs.h>
 #include <acpi/video.h>
 #include <asm/io.h>
@@ -106,6 +107,10 @@ struct apple_gmux_config {
 #define GMUX_MAX_BRIGHTNESS		GMUX_BRIGHTNESS_MASK
 
 # define MMIO_GMUX_MAX_BRIGHTNESS	0xffff
+
+static bool force_igd;
+module_param(force_igd, bool, 0);
+MODULE_PARM_DESC(force_idg, "Switch gpu to igd on module load. Make sure that you have apple-set-os set up and the iGPU is in `lspci -s 00:02.0`. (default: false) (bool)");
 
 static u8 gmux_pio_read8(struct apple_gmux_data *gmux_data, int port)
 {
@@ -944,6 +949,19 @@ get_version:
 	init_completion(&gmux_data->powerchange_done);
 	gmux_enable_interrupts(gmux_data);
 	gmux_read_switch_state(gmux_data);
+
+	if (force_igd) {
+		struct pci_dev *pdev;
+
+		pdev = pci_get_domain_bus_and_slot(0, 0, PCI_DEVFN(2, 0));
+		if (pdev) {
+			pr_info("Switching to IGD");
+			gmux_switchto(VGA_SWITCHEROO_IGD);
+			vga_set_default_device(pdev);
+		} else {
+			pr_err("force_idg is true, but couldn't find iGPU at 00:02.0! Is apple-set-os working?");
+		}
+	}
 
 	/*
 	 * Retina MacBook Pros cannot switch the panel's AUX separately
