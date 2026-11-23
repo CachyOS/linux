@@ -82,10 +82,19 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
  *
  * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
+#ifdef CONFIG_CACHY
+unsigned int sysctl_sched_base_slice			= 400000ULL;
+static unsigned int normalized_sysctl_sched_base_slice	= 400000ULL;
+#else
 unsigned int sysctl_sched_base_slice			= 700000ULL;
 static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
+#endif /* CONFIG_CACHY */
 
+#ifdef CONFIG_CACHY
+__read_mostly unsigned int sysctl_sched_migration_cost	= 400000UL;
+#else
 __read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
+#endif
 
 static int __init setup_sched_thermal_decay_shift(char *str)
 {
@@ -5170,7 +5179,12 @@ static long calc_up_shares(struct cfs_rq *cfs_rq)
 	return READ_ONCE(tg->shares);
 }
 
+#ifdef CONFIG_CACHY
+DEFINE_STATIC_CALL(calc_group_shares, calc_max_shares);
+#else
 DEFINE_STATIC_CALL(calc_group_shares, calc_concur_shares);
+#endif
+
 
 void __sched_cgroup_mode_update(int mode)
 {
@@ -14186,7 +14200,7 @@ static inline void update_newidle_stats(struct sched_domain *sd, unsigned int su
 	sd->newidle_call++;
 	sd->newidle_success += success;
 
-	if (sd->newidle_call >= 1024) {
+	if (sd->newidle_call >= 512) {
 		u64 now = sched_clock();
 		s64 delta = now - sd->newidle_stamp;
 		sd->newidle_stamp = now;
@@ -14199,18 +14213,18 @@ static inline void update_newidle_stats(struct sched_domain *sd, unsigned int su
 			/*
 			 * ratio  delta   freq
 			 *
-			 * 1024 -  4  s -  128 Hz
-			 *  512 -  2  s -  256 Hz
-			 *  256 -  1  s -  512 Hz
-			 *  128 - .5  s - 1024 Hz
-			 *   64 - .25 s - 2048 Hz
+			 *  512 -  4  s -  128 Hz
+			 *  256 -  2  s -  256 Hz
+			 *  128 -  1  s -  512 Hz
+			 *   64 - .5  s - 1024 Hz
+			 *   32 - .25 s - 2048 Hz
 			 */
-			ratio = delta >> 22;
+			ratio = delta >> 23;
 		}
 
 		ratio += sd->newidle_success;
 
-		sd->newidle_ratio = min(1024, ratio);
+		sd->newidle_ratio = min(512, ratio);
 		sd->newidle_call /= 2;
 		sd->newidle_success /= 2;
 	}
@@ -14937,19 +14951,38 @@ static int sched_balance_newidle(struct rq *this_rq, struct rq_flags *rf)
 		if (sd->flags & SD_BALANCE_NEWIDLE) {
 			unsigned int weight = 1;
 
-			if (sched_feat(NI_RANDOM) && sd->newidle_ratio < 1024) {
+			/*
+			 * While unlocked or scanning lower domains, a local
+			 * wakeup may already be queued or pending on this_rq.
+			 * Stop pulling remote tasks to avoid collisions and
+			 * involuntary preemptions.
+			 */
+			if (this_rq->ttwu_pending ||
+			    READ_ONCE(this_rq->cfs.h_nr_queued)) {
+				break;
+			}
+
+			/*
+			 * Always run newidle immediately within the local L3
+			 * domain (SMT/MC). Only throttle cross-CCD (DIE) scans
+			 * where !SD_SHARE_LLC, with a 16/512 (~3.1%) floor.
+			 */
+			if (sched_feat(NI_RANDOM) &&
+			    !(sd->flags & SD_SHARE_LLC) &&
+			    sd->newidle_ratio < 512) {
 				/*
-				 * Throw a 1k sided dice; and only run
+				 * Throw a 512 sided dice; and only run
 				 * newidle_balance according to the success
 				 * rate.
 				 */
-				u32 d1k = sched_rng() % 1024;
-				weight = 1 + sd->newidle_ratio;
-				if (d1k > weight) {
+				u32 d512 = sched_rng() % 512;
+				weight = clamp_t(unsigned int,
+						 1 + sd->newidle_ratio, 16, 512);
+				if (d512 > weight) {
 					update_newidle_stats(sd, 0);
 					continue;
 				}
-				weight = (1024 + weight/2) / weight;
+				weight = (512 + weight/2) / weight;
 			}
 
 			pulled_task = sched_balance_rq(this_cpu, this_rq,

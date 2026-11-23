@@ -55,8 +55,13 @@ SCHED_FEAT(CACHE_HOT_BUDDY, true)
  *
  * DELAY_ZERO clips the lag on dequeue (or wakeup) to 0.
  */
+#ifdef CONFIG_CACHY
+SCHED_FEAT(DELAY_DEQUEUE, false)
+SCHED_FEAT(DELAY_ZERO, false)
+#else
 SCHED_FEAT(DELAY_DEQUEUE, true)
 SCHED_FEAT(DELAY_ZERO, true)
+#endif
 
 SCHED_FEAT(PARANOID_AVG, false)
 
@@ -141,4 +146,4 @@ SCHED_FEAT(LATENCY_WARN, false)
  * Do newidle balancing proportional to its success rate using randomization.
  */
 SCHED_FEAT(NI_RANDOM, true)
-SCHED_FEAT(NI_RATE, true)
+SCHED_FEAT(NI_RATE, false)
