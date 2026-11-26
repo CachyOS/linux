@@ -3869,6 +3869,7 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 	struct amdgpu_hdmi_vsdb_info vsdb_info = {0};
 	const struct edid *edid;
 	bool freesync_capable = false;
+	bool hf_vsdb_vrr = false;
 	enum adaptive_sync_type as_type = ADAPTIVE_SYNC_TYPE_NONE;
 
 	if (!connector->state) {
@@ -3994,8 +3995,10 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 				}
 
 				if (amdgpu_dm_connector->max_vfreq -
-				    amdgpu_dm_connector->min_vfreq > 10)
+				    amdgpu_dm_connector->min_vfreq > 10) {
 					freesync_capable = true;
+					hf_vsdb_vrr = true;
+				}
 
 				connector->display_info.monitor_range.min_vfreq =
 					amdgpu_dm_connector->min_vfreq;
@@ -4041,8 +4044,13 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
 			amdgpu_dm_connector->min_vfreq;
 	}
 
-	/* HDMI/PCON without an EDID FreeSync VCP code is not FreeSync-capable. */
-	if ((sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A ||
+	/*
+	 * HDMI/PCON without an EDID FreeSync VCP code is not FreeSync-capable,
+	 * unless the HDMI sink got its VRR range from the HDMI 2.1 HF-VSDB.
+	 * Such sinks typically lack an AMD VSDB and therefore have no
+	 * FreeSync VCP code.
+	 */
+	if (((sink->sink_signal == SIGNAL_TYPE_HDMI_TYPE_A && !hf_vsdb_vrr) ||
 	     as_type == FREESYNC_TYPE_PCON_IN_WHITELIST) &&
 	    !sink->edid_caps.freesync_vcp_code)
 		freesync_capable = false;
